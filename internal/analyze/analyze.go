@@ -148,97 +148,68 @@ func listPostgresTables(ctx context.Context, pool *pgxpool.Pool) ([]string, erro
 		return nil, err
 	}
 	defer rows.Close()
-
-	var tables []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, err
-		}
-		tables = append(tables, name)
-	}
-	return tables, rows.Err()
+	return scanStrings(rows)
 }
 
 func analyzePostgresTable(ctx context.Context, pool *pgxpool.Pool, table string, cutoff time.Time, dateColumnOverride string) (*TableReport, error) {
-	quoted := quotePGIdentifier(table)
-
-	// Use explicit date column if provided, otherwise auto-detect
-	var err error
-	dateCol := dateColumnOverride
-	if dateCol == "" {
-		dateCol, err = detectPostgresDateColumn(ctx, pool, table)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if dateCol == "" {
-		return nil, fmt.Errorf("no date/timestamp column detected (use --date-column to specify)")
-	}
-
-	// Total rows (estimate from pg_class for speed)
-	var totalRows int64
-	err = pool.QueryRow(ctx,
-		`SELECT COALESCE(reltuples::bigint, 0) FROM pg_class WHERE relname = $1`, table).Scan(&totalRows)
-	if err != nil || totalRows <= 0 {
-		// Fallback to real count
-		err = pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %s`, quoted)).Scan(&totalRows)
-		if err != nil {
-			return nil, fmt.Errorf("count rows: %w", err)
-		}
-	}
-
-	if totalRows == 0 {
-		return nil, fmt.Errorf("table is empty")
-	}
-
-	// Table size
-	var sizeBytes int64
-	err = pool.QueryRow(ctx,
-		`SELECT pg_total_relation_size($1::regclass)`, table).Scan(&sizeBytes)
+	dateCol, err := resolveDateColumn(dateColumnOverride, func() (string, error) {
+		return detectPostgresDateColumn(ctx, pool, table)
+	})
 	if err != nil {
-		return nil, fmt.Errorf("get table size: %w", err)
+		return nil, err
 	}
-
-	// MIN/MAX date
-	var minTime, maxTime sql.NullTime
-	quotedCol := quotePGIdentifier(dateCol)
-	err = pool.QueryRow(ctx,
-		fmt.Sprintf(`SELECT MIN(%s), MAX(%s) FROM %s`, quotedCol, quotedCol, quoted)).Scan(&minTime, &maxTime)
+	totalRows, sizeBytes, err := pgTableStats(ctx, pool, table)
 	if err != nil {
-		return nil, fmt.Errorf("get date range: %w", err)
+		return nil, err
 	}
-	if !minTime.Valid || !maxTime.Valid {
-		return nil, fmt.Errorf("date column %q has no valid values", dateCol)
+	oldest, newest, err := pgDateRange(ctx, pool, table, dateCol)
+	if err != nil {
+		return nil, err
 	}
-
-	// Rows older than cutoff
-	var archivableRows int64
+	var archivable int64
 	err = pool.QueryRow(ctx,
-		fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE %s < $1`, quoted, quotedCol), cutoff).Scan(&archivableRows)
+		fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE %s < $1`, quotePGIdentifier(table), quotePGIdentifier(dateCol)), cutoff).Scan(&archivable)
 	if err != nil {
 		return nil, fmt.Errorf("count old rows: %w", err)
 	}
+	r := newTableReport(table, dateCol, totalRows, sizeBytes, oldest, newest, archivable)
+	return &r, nil
+}
 
-	pct := 0
-	if totalRows > 0 {
-		pct = int(archivableRows * 100 / totalRows)
+// pgTableStats returns the row count (planner estimate, else exact) and the
+// total relation size. An empty table is an error.
+func pgTableStats(ctx context.Context, pool *pgxpool.Pool, table string) (totalRows, sizeBytes int64, err error) {
+	err = pool.QueryRow(ctx,
+		`SELECT COALESCE(reltuples::bigint, 0) FROM pg_class WHERE relname = $1`, table).Scan(&totalRows)
+	if err != nil || totalRows <= 0 {
+		err = pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %s`, quotePGIdentifier(table))).Scan(&totalRows)
+		if err != nil {
+			return 0, 0, fmt.Errorf("count rows: %w", err)
+		}
 	}
+	if totalRows == 0 {
+		return 0, 0, fmt.Errorf("table is empty")
+	}
+	err = pool.QueryRow(ctx, `SELECT pg_total_relation_size($1::regclass)`, table).Scan(&sizeBytes)
+	if err != nil {
+		return 0, 0, fmt.Errorf("get table size: %w", err)
+	}
+	return totalRows, sizeBytes, nil
+}
 
-	// Estimated archived size: proportional share * compression ratio
-	estSize := int64(float64(archivableRows) / float64(totalRows) * float64(sizeBytes) * compressionRatio)
-
-	return &TableReport{
-		TableName:        table,
-		TotalRows:        totalRows,
-		SizeBytes:        sizeBytes,
-		DateColumn:       dateCol,
-		OldestRow:        minTime.Time,
-		NewestRow:        maxTime.Time,
-		ArchivableRows:   archivableRows,
-		ArchivablePct:    pct,
-		EstArchivedBytes: estSize,
-	}, nil
+// pgDateRange returns MIN and MAX of the date column.
+func pgDateRange(ctx context.Context, pool *pgxpool.Pool, table, dateCol string) (time.Time, time.Time, error) {
+	var minTime, maxTime sql.NullTime
+	qc := quotePGIdentifier(dateCol)
+	err := pool.QueryRow(ctx,
+		fmt.Sprintf(`SELECT MIN(%s), MAX(%s) FROM %s`, qc, qc, quotePGIdentifier(table))).Scan(&minTime, &maxTime)
+	if err != nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("get date range: %w", err)
+	}
+	if !minTime.Valid || !maxTime.Valid {
+		return time.Time{}, time.Time{}, fmt.Errorf("date column %q has no valid values", dateCol)
+	}
+	return minTime.Time, maxTime.Time, nil
 }
 
 func detectPostgresDateColumn(ctx context.Context, pool *pgxpool.Pool, table string) (string, error) {
@@ -274,104 +245,78 @@ func listMySQLTables(ctx context.Context, db *sql.DB) ([]string, error) {
 		return nil, err
 	}
 	defer rows.Close()
-
-	var tables []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, err
-		}
-		tables = append(tables, name)
-	}
-	return tables, rows.Err()
+	return scanStrings(rows)
 }
 
 func analyzeMySQLTable(ctx context.Context, db *sql.DB, table string, cutoff time.Time, dateColumnOverride string) (*TableReport, error) {
-	quoted := quoteMySQLIdentifier(table)
-
-	// Use explicit date column if provided, otherwise auto-detect
-	var err error
-	dateCol := dateColumnOverride
-	if dateCol == "" {
-		dateCol, err = detectMySQLDateColumn(ctx, db, table)
-		if err != nil {
-			return nil, err
-		}
+	dateCol, err := resolveDateColumn(dateColumnOverride, func() (string, error) {
+		return detectMySQLDateColumn(ctx, db, table)
+	})
+	if err != nil {
+		return nil, err
 	}
-	if dateCol == "" {
-		return nil, fmt.Errorf("no date/timestamp column detected (use --date-column to specify)")
+	totalRows, sizeBytes, err := mysqlTableStats(ctx, db, table)
+	if err != nil {
+		return nil, err
 	}
+	oldest, newest, err := mysqlDateRange(ctx, db, table, dateCol)
+	if err != nil {
+		return nil, err
+	}
+	var archivable int64
+	err = db.QueryRowContext(ctx,
+		fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s < ?", quoteMySQLIdentifier(table), quoteMySQLIdentifier(dateCol)),
+		cutoff.Format("2006-01-02 15:04:05")).Scan(&archivable)
+	if err != nil {
+		return nil, fmt.Errorf("count old rows: %w", err)
+	}
+	r := newTableReport(table, dateCol, totalRows, sizeBytes, oldest, newest, archivable)
+	return &r, nil
+}
 
-	// Total rows + size (estimate from information_schema)
-	var totalRows, sizeBytes int64
+// mysqlTableStats returns the row count (information_schema estimate, else
+// exact) and the data+index size. An empty table is an error.
+func mysqlTableStats(ctx context.Context, db *sql.DB, table string) (totalRows, sizeBytes int64, err error) {
 	err = db.QueryRowContext(ctx,
 		`SELECT COALESCE(TABLE_ROWS, 0), COALESCE(DATA_LENGTH + INDEX_LENGTH, 0)
 		 FROM information_schema.TABLES
 		 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`, table).Scan(&totalRows, &sizeBytes)
 	if err != nil {
-		return nil, fmt.Errorf("get table stats: %w", err)
+		return 0, 0, fmt.Errorf("get table stats: %w", err)
 	}
-
 	if totalRows == 0 {
-		// Fallback to real count
-		err = db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s", quoted)).Scan(&totalRows)
+		err = db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s", quoteMySQLIdentifier(table))).Scan(&totalRows)
 		if err != nil {
-			return nil, fmt.Errorf("count rows: %w", err)
+			return 0, 0, fmt.Errorf("count rows: %w", err)
 		}
 	}
-
 	if totalRows == 0 {
-		return nil, fmt.Errorf("table is empty")
+		return 0, 0, fmt.Errorf("table is empty")
 	}
+	return totalRows, sizeBytes, nil
+}
 
-	// MIN/MAX date
-	quotedCol := quoteMySQLIdentifier(dateCol)
+// mysqlDateRange returns MIN and MAX of the date column.
+func mysqlDateRange(ctx context.Context, db *sql.DB, table, dateCol string) (time.Time, time.Time, error) {
 	var minStr, maxStr sql.NullString
-	err = db.QueryRowContext(ctx,
-		fmt.Sprintf("SELECT MIN(%s), MAX(%s) FROM %s", quotedCol, quotedCol, quoted)).Scan(&minStr, &maxStr)
+	qc := quoteMySQLIdentifier(dateCol)
+	err := db.QueryRowContext(ctx,
+		fmt.Sprintf("SELECT MIN(%s), MAX(%s) FROM %s", qc, qc, quoteMySQLIdentifier(table))).Scan(&minStr, &maxStr)
 	if err != nil {
-		return nil, fmt.Errorf("get date range: %w", err)
+		return time.Time{}, time.Time{}, fmt.Errorf("get date range: %w", err)
 	}
 	if !minStr.Valid || !maxStr.Valid {
-		return nil, fmt.Errorf("date column %q has no valid values", dateCol)
+		return time.Time{}, time.Time{}, fmt.Errorf("date column %q has no valid values", dateCol)
 	}
-
 	minTime, err := parseMySQLTime(minStr.String)
 	if err != nil {
-		return nil, fmt.Errorf("parse min date: %w", err)
+		return time.Time{}, time.Time{}, fmt.Errorf("parse min date: %w", err)
 	}
 	maxTime, err := parseMySQLTime(maxStr.String)
 	if err != nil {
-		return nil, fmt.Errorf("parse max date: %w", err)
+		return time.Time{}, time.Time{}, fmt.Errorf("parse max date: %w", err)
 	}
-
-	// Rows older than cutoff
-	var archivableRows int64
-	cutoffStr := cutoff.Format("2006-01-02 15:04:05")
-	err = db.QueryRowContext(ctx,
-		fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s < ?", quoted, quotedCol), cutoffStr).Scan(&archivableRows)
-	if err != nil {
-		return nil, fmt.Errorf("count old rows: %w", err)
-	}
-
-	pct := 0
-	if totalRows > 0 {
-		pct = int(archivableRows * 100 / totalRows)
-	}
-
-	estSize := int64(float64(archivableRows) / float64(totalRows) * float64(sizeBytes) * compressionRatio)
-
-	return &TableReport{
-		TableName:        table,
-		TotalRows:        totalRows,
-		SizeBytes:        sizeBytes,
-		DateColumn:       dateCol,
-		OldestRow:        minTime,
-		NewestRow:        maxTime,
-		ArchivableRows:   archivableRows,
-		ArchivablePct:    pct,
-		EstArchivedBytes: estSize,
-	}, nil
+	return minTime, maxTime, nil
 }
 
 func detectMySQLDateColumn(ctx context.Context, db *sql.DB, table string) (string, error) {
@@ -408,6 +353,63 @@ func parseMySQLTime(s string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("could not parse time: %q", s)
+}
+
+// stringRows is the part of sql.Rows and pgx.Rows needed to read one text column.
+type stringRows interface {
+	Next() bool
+	Scan(dest ...any) error
+	Err() error
+}
+
+// scanStrings reads a single-column result set into a slice.
+func scanStrings(rows stringRows) ([]string, error) {
+	var out []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// resolveDateColumn uses the override when given, otherwise detects a column,
+// and fails when neither yields one.
+func resolveDateColumn(override string, detect func() (string, error)) (string, error) {
+	col := override
+	if col == "" {
+		var err error
+		if col, err = detect(); err != nil {
+			return "", err
+		}
+	}
+	if col == "" {
+		return "", fmt.Errorf("no date/timestamp column detected (use --date-column to specify)")
+	}
+	return col, nil
+}
+
+// newTableReport assembles a report, deriving the archivable percentage and
+// the estimated Parquet size from the counts and the table size.
+func newTableReport(table, dateCol string, totalRows, sizeBytes int64, oldest, newest time.Time, archivable int64) TableReport {
+	pct, est := 0, int64(0)
+	if totalRows > 0 {
+		pct = int(archivable * 100 / totalRows)
+		est = int64(float64(archivable) / float64(totalRows) * float64(sizeBytes) * compressionRatio)
+	}
+	return TableReport{
+		TableName:        table,
+		TotalRows:        totalRows,
+		SizeBytes:        sizeBytes,
+		DateColumn:       dateCol,
+		OldestRow:        oldest,
+		NewestRow:        newest,
+		ArchivableRows:   archivable,
+		ArchivablePct:    pct,
+		EstArchivedBytes: est,
+	}
 }
 
 // ---------------------------------------------------------------------------
