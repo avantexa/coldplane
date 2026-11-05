@@ -172,7 +172,6 @@ func TestLocalMySQLFlow(t *testing.T) {
 
 	backupDir := t.TempDir()
 	backupName := "local_mysql_test"
-	mysqlDSN := "mysql://testuser:testpass@localhost:3306/testdb?parseTime=true"
 
 	t.Run("01_local_backup_create", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -182,7 +181,7 @@ func TestLocalMySQLFlow(t *testing.T) {
 		opts.LocalOutputDir = backupDir
 
 		// Normalize DSN like the CLI does
-		normalizedDSN := archive.NormalizeMySQLDSN(mysqlDSN)
+		normalizedDSN := mysqlGoDSN
 		err := archive.ArchiveMySQL(ctx, normalizedDSN, []string{"inttest_orders"}, backupName, opts)
 		if err != nil {
 			t.Fatalf("Local MySQL backup failed: %v", err)
@@ -321,7 +320,6 @@ func TestLocalMySQLAllTypes(t *testing.T) {
 
 	backupDir := t.TempDir()
 	backupName := "local_mysql_alltypes"
-	mysqlDSN := "mysql://testuser:testpass@localhost:3306/testdb?parseTime=true"
 
 	t.Run("01_backup", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -330,7 +328,7 @@ func TestLocalMySQLAllTypes(t *testing.T) {
 		opts := archive.DefaultOptions()
 		opts.LocalOutputDir = backupDir
 
-		normalizedDSN := archive.NormalizeMySQLDSN(mysqlDSN)
+		normalizedDSN := mysqlGoDSN
 		err := archive.ArchiveMySQL(ctx, normalizedDSN, []string{"inttest_alltypes"}, backupName, opts)
 		if err != nil {
 			t.Fatalf("Local MySQL alltypes backup failed: %v", err)
@@ -745,7 +743,6 @@ func TestLocalBackupWithWhere_MySQL(t *testing.T) {
 
 	backupDir := t.TempDir()
 	backupName := "local_mysql_where"
-	mysqlDSN := "mysql://testuser:testpass@localhost:3306/testdb?parseTime=true"
 
 	t.Run("01_backup_with_where", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -755,7 +752,7 @@ func TestLocalBackupWithWhere_MySQL(t *testing.T) {
 		opts.LocalOutputDir = backupDir
 		opts.Where = "created_at < DATE_SUB(NOW(), INTERVAL 18 MONTH)"
 
-		normalizedDSN := archive.NormalizeMySQLDSN(mysqlDSN)
+		normalizedDSN := mysqlGoDSN
 		err := archive.ArchiveMySQL(ctx, normalizedDSN, []string{"inttest_orders"}, backupName, opts)
 		if err != nil {
 			t.Fatalf("Local MySQL backup with --where failed: %v", err)
