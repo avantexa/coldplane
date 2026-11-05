@@ -30,3 +30,9 @@ func TestFormatDuration_SingleUnits(t *testing.T) {
 		}
 	}
 }
+
+func TestParseDuration_OverflowingNumber(t *testing.T) {
+	if d, err := ParseDuration("99999999999999999999d"); err == nil || d != 0 {
+		t.Errorf("got %v, %v", d, err)
+	}
+}

@@ -29,9 +29,11 @@ func seedChunkingTables(driver, dsn string) error {
 		`DROP TABLE IF EXISTS inttest_ids`,
 		`DROP TABLE IF EXISTS inttest_plain`,
 		`DROP TABLE IF EXISTS inttest_events`,
+		`DROP TABLE IF EXISTS inttest_empty`,
 		`CREATE TABLE inttest_ids (id INT PRIMARY KEY, label VARCHAR(20))`,
 		`CREATE TABLE inttest_plain (label VARCHAR(20), qty INT)`,
 		`CREATE TABLE inttest_events (happened_at TIMESTAMP, note VARCHAR(20))`,
+		`CREATE TABLE inttest_empty (id INT PRIMARY KEY, happened_at TIMESTAMP)`,
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {
@@ -73,7 +75,7 @@ func parquetRowCount(t *testing.T, backupDir, table string) int64 {
 	return n
 }
 
-func testChunkingStrategies(t *testing.T, run func(ctx context.Context, name string, opts archive.ArchiveOptions) error, dbType string) {
+func testChunkingStrategies(t *testing.T, run func(ctx context.Context, name string, opts archive.ArchiveOptions, tables ...string) error, dbType string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -83,7 +85,7 @@ func testChunkingStrategies(t *testing.T, run func(ctx context.Context, name str
 	opts.ChunkSize = 10 // 25 ids spread over 73 values -> several PK chunks
 	opts.Workers = 2
 
-	if err := run(ctx, "chunking", opts); err != nil {
+	if err := run(ctx, "chunking", opts, "inttest_ids", "inttest_plain", "inttest_events"); err != nil {
 		t.Fatalf("archive: %v", err)
 	}
 
@@ -95,6 +97,26 @@ func testChunkingStrategies(t *testing.T, run func(ctx context.Context, name str
 	}
 	if got := parquetRowCount(t, filepath.Join(backupDir, "chunking"), "inttest_events"); got != 12 {
 		t.Errorf("inttest_events: %d rows archived, want 12", got)
+	}
+
+	// An empty table and a WHERE that matches nothing both archive cleanly with no files.
+	whereOpts := opts
+	whereOpts.Where = "id > 1000"
+	if err := run(ctx, "nothing", whereOpts, "inttest_empty", "inttest_ids"); err != nil {
+		t.Fatalf("archive with no matching rows: %v", err)
+	}
+	nothing, err := archive.ReadLocalManifest(filepath.Join(backupDir, "nothing"))
+	if err != nil {
+		t.Fatalf("manifest: %v", err)
+	}
+	for _, tb := range nothing["tables"].([]interface{}) {
+		m := tb.(map[string]interface{})
+		if n := len(m["files"].([]interface{})); n != 0 {
+			t.Errorf("%v: expected no files, got %d", m["name"], n)
+		}
+	}
+	if nothing["size_bytes"].(float64) != 0 {
+		t.Errorf("empty backup size = %v", nothing["size_bytes"])
 	}
 
 	manifest, err := archive.ReadLocalManifest(filepath.Join(backupDir, "chunking"))
@@ -137,8 +159,8 @@ func TestLocalChunkingStrategies_Postgres(t *testing.T) {
 	if err := seedChunkingTables("postgres", pgDSN); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	testChunkingStrategies(t, func(ctx context.Context, name string, opts archive.ArchiveOptions) error {
-		return archive.ArchivePostgres(ctx, pgDSN, []string{"inttest_ids", "inttest_plain", "inttest_events"}, name, opts)
+	testChunkingStrategies(t, func(ctx context.Context, name string, opts archive.ArchiveOptions, tables ...string) error {
+		return archive.ArchivePostgres(ctx, pgDSN, tables, name, opts)
 	}, "postgres")
 }
 
@@ -150,7 +172,7 @@ func TestLocalChunkingStrategies_MySQL(t *testing.T) {
 	if err := seedChunkingTables("mysql", mysqlGoDSN); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	testChunkingStrategies(t, func(ctx context.Context, name string, opts archive.ArchiveOptions) error {
-		return archive.ArchiveMySQL(ctx, mysqlGoDSN, []string{"inttest_ids", "inttest_plain", "inttest_events"}, name, opts)
+	testChunkingStrategies(t, func(ctx context.Context, name string, opts archive.ArchiveOptions, tables ...string) error {
+		return archive.ArchiveMySQL(ctx, mysqlGoDSN, tables, name, opts)
 	}, "mysql")
 }

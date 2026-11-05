@@ -1,6 +1,8 @@
 package archive
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -29,8 +31,12 @@ func TestTableManifest(t *testing.T) {
 	if got := m["files"].([]map[string]interface{}); len(got) != 1 {
 		t.Errorf("files not carried over: %v", m["files"])
 	}
-	if m := tableManifest("t", "", nil); m["partition_column"] != nil {
+	m = tableManifest("t", "", nil)
+	if m["partition_column"] != nil {
 		t.Errorf("empty partition column should be nil, got %#v", m["partition_column"])
+	}
+	if files, ok := m["files"].([]map[string]interface{}); !ok || files == nil || len(files) != 0 {
+		t.Errorf("no files must be an empty list, not nil: %#v", m["files"])
 	}
 }
 
@@ -62,5 +68,16 @@ func TestWriteBackupManifest(t *testing.T) {
 	}
 	if got := m["tables"].([]interface{}); len(got) != 2 {
 		t.Errorf("tables = %v", m["tables"])
+	}
+}
+
+func TestWriteBackupManifest_UnwritableDir(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(file, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	total, err := writeBackupManifest(filepath.Join(file, "bk"), "bk", "mysql", "db", nil)
+	if err == nil || total != 0 {
+		t.Errorf("writing under a file should fail: %d, %v", total, err)
 	}
 }

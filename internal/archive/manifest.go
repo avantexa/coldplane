@@ -37,6 +37,9 @@ func tableManifest(table, partitionColumn string, files []map[string]interface{}
 	if partitionColumn != "" {
 		partCol = partitionColumn
 	}
+	if files == nil {
+		files = []map[string]interface{}{} // an empty table lists [] in index.json, not null
+	}
 	return map[string]interface{}{
 		"name":             table,
 		"partition_column": partCol,

@@ -28,3 +28,26 @@ func TestFlagDefaults(t *testing.T) {
 		}
 	}
 }
+
+func TestHumanSizeInt64_Boundaries(t *testing.T) {
+	cases := map[int64]string{1 << 10: "1024 B", 1<<10 + 1: "1.00 KB", 1 << 20: "1024.00 KB", 1<<20 + 1: "1.00 MB", 1 << 30: "1024.00 MB", 1<<30 + 1: "1.00 GB"}
+	for in, want := range cases {
+		if got := humanSizeInt64(in); got != want {
+			t.Errorf("humanSizeInt64(%d) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestBackupCreate_RequiresDBURLAndTables(t *testing.T) {
+	run := func(args ...string) error {
+		dbURL, tables = "", ""
+		rootCmd.SetArgs(append([]string{"backup", "create"}, args...))
+		return rootCmd.Execute()
+	}
+	if err := run(); err == nil || err.Error() != "you must specify --db-url" {
+		t.Errorf("no flags: %v", err)
+	}
+	if err := run("--db-url", "postgres://x"); err == nil || err.Error() != "you must specify --tables" {
+		t.Errorf("db-url only: %v", err)
+	}
+}

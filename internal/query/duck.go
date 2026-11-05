@@ -286,7 +286,7 @@ func formatCell(v interface{}) string {
 	case nil:
 		return ""
 	case float64:
-		if x == math.Trunc(x) && !math.IsInf(x, 0) && !math.IsNaN(x) {
+		if x == math.Trunc(x) && !math.IsInf(x, 0) { // NaN never equals its truncation
 			return strconv.FormatInt(int64(x), 10)
 		}
 		return strconv.FormatFloat(x, 'f', -1, 64)
