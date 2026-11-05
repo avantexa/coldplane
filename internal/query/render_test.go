@@ -2,6 +2,7 @@ package query
 
 import (
 	"bytes"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -53,5 +54,23 @@ func TestNoFilesError(t *testing.T) {
 	}
 	if strings.Contains(noFilesError("bk", "").Error(), "table") {
 		t.Error("no-table variant should not mention a table")
+	}
+}
+
+func TestFormatCell_SpecialFloats(t *testing.T) {
+	cases := map[string]struct {
+		in   float64
+		want string
+	}{
+		"inf":      {math.Inf(1), "+Inf"},
+		"neg inf":  {math.Inf(-1), "-Inf"},
+		"nan":      {math.NaN(), "NaN"},
+		"two dp":   {1.25, "1.25"},
+		"negative": {-2.5, "-2.5"},
+	}
+	for name, c := range cases {
+		if got := formatCell(c.in); got != c.want {
+			t.Errorf("%s: got %q, want %q", name, got, c.want)
+		}
 	}
 }

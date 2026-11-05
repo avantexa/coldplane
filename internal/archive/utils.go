@@ -151,12 +151,8 @@ func inferParquetSchema(fieldNames []string, sampleRow []interface{}) string {
 }
 
 func ExtractDBName(dbURL string) string {
-	parts := strings.Split(dbURL, "/")
-	if len(parts) > 0 {
-		dbParts := strings.Split(parts[len(parts)-1], "?")
-		return dbParts[0]
-	}
-	return ""
+	parts := strings.Split(dbURL, "/") // Split always yields at least one part
+	return strings.Split(parts[len(parts)-1], "?")[0]
 }
 
 // toParquetSafeValue converts Go values into types that the parquet-go JSON
