@@ -122,7 +122,7 @@ func inferParquetSchema(fieldNames []string, sampleRow []interface{}) string {
 		// All columns use repetitiontype=OPTIONAL so parquet-go handles
 		// NULL values (missing keys in the JSON row) natively instead of
 		// panicking with "interface {} is nil, not string".
-		switch v := val.(type) {
+		switch val.(type) {
 		case int, int8, int16, int32, int64, uint8, uint16, uint32, uint64:
 			tag = fmt.Sprintf(`{"Tag":"name=%s, type=INT64, repetitiontype=OPTIONAL"}`, name)
 
@@ -135,20 +135,8 @@ func inferParquetSchema(fieldNames []string, sampleRow []interface{}) string {
 		case pgtype.Numeric:
 			tag = fmt.Sprintf(`{"Tag":"name=%s, type=FIXED_LEN_BYTE_ARRAY, length=32, convertedtype=DECIMAL, scale=18, precision=38, repetitiontype=OPTIONAL"}`, name)
 
-		case []byte:
-			strVal := string(v)
-			if _, _, ok := detectDecimalPrecision(strVal); ok {
-				tag = fmt.Sprintf(`{"Tag":"name=%s, type=BYTE_ARRAY, convertedtype=UTF8, repetitiontype=OPTIONAL"}`, name)
-			} else {
-				tag = fmt.Sprintf(`{"Tag":"name=%s, type=BYTE_ARRAY, convertedtype=UTF8, repetitiontype=OPTIONAL"}`, name)
-			}
-
-		case string:
-			if _, _, ok := detectDecimalPrecision(v); ok {
-				tag = fmt.Sprintf(`{"Tag":"name=%s, type=BYTE_ARRAY, convertedtype=UTF8, repetitiontype=OPTIONAL"}`, name)
-			} else {
-				tag = fmt.Sprintf(`{"Tag":"name=%s, type=BYTE_ARRAY, convertedtype=UTF8, repetitiontype=OPTIONAL"}`, name)
-			}
+		case []byte, string:
+			tag = fmt.Sprintf(`{"Tag":"name=%s, type=BYTE_ARRAY, convertedtype=UTF8, repetitiontype=OPTIONAL"}`, name)
 
 		default:
 			fmt.Printf("[infer] Unknown type for field '%s': %T — defaulting to BYTE_ARRAY\n", name, val)

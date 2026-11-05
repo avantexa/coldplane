@@ -27,21 +27,7 @@ func archivePostgresTable(ctx context.Context, pool *pgxpool.Pool, store FileSto
 
 	partitionColumnUsed := pgPartitionColumn(ctx, conn, table)
 
-	hasTime, timeColumn, hasID, idColumn, err := DetectPostgresChunkingColumn(ctx, conn.Conn(), table)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to detect chunk column: %w", err)
-	}
-
-	var n int
-	var query func(i int) (string, []interface{})
-	switch {
-	case hasTime:
-		n, query, err = pgTimeChunks(ctx, conn, table, where, timeColumn, progress)
-	case hasID:
-		n, query, err = pgIDChunks(ctx, conn, table, where, idColumn, opts.ChunkSize, progress)
-	default:
-		n, query, err = pgOffsetChunks(ctx, conn, table, where, opts.ChunkSize, progress)
-	}
+	n, query, err := pgChunkPlan(ctx, conn, table, where, opts.ChunkSize, progress)
 	if err != nil {
 		return nil, partitionColumnUsed, err
 	}
@@ -69,6 +55,23 @@ func archivePostgresTable(ctx context.Context, pool *pgxpool.Pool, store FileSto
 	}
 	fmt.Printf("[summary] Table %s: %d rows archived in %d chunks\n", table, progress.DoneRows, progress.DoneChunks)
 	return uploadedKeys, partitionColumnUsed, nil
+}
+
+// pgChunkPlan detects the chunking column and plans the chunks for it,
+// returning the chunk count and the per-chunk query builder.
+func pgChunkPlan(ctx context.Context, conn *pgxpool.Conn, table, where string, chunkSize int, progress *ProgressTracker) (int, func(int) (string, []interface{}), error) {
+	hasTime, timeColumn, hasID, idColumn, err := DetectPostgresChunkingColumn(ctx, conn.Conn(), table)
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to detect chunk column: %w", err)
+	}
+	switch {
+	case hasTime:
+		return pgTimeChunks(ctx, conn, table, where, timeColumn, progress)
+	case hasID:
+		return pgIDChunks(ctx, conn, table, where, idColumn, chunkSize, progress)
+	default:
+		return pgOffsetChunks(ctx, conn, table, where, chunkSize, progress)
+	}
 }
 
 // pgPartitionColumn infers the partition column from the last
@@ -239,41 +242,58 @@ func parseAnyTime(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("could not parse time: %q", s)
 }
 
+// DetectPostgresChunkingColumn picks the best chunking column: the first
+// date/timestamp column, then an integer primary key, else none (OFFSET/LIMIT).
 func DetectPostgresChunkingColumn(ctx context.Context, conn *pgx.Conn, table string) (hasTime bool, timeColumn string, hasID bool, idColumn string, err error) {
-	// 1. Try to find a TIMESTAMP/DATETIME column
-	colRows, err := conn.Query(ctx,
-		`SELECT column_name, data_type FROM information_schema.columns WHERE table_name = $1`, table)
+	col, err := pgFirstTimestampColumn(ctx, conn, table)
 	if err != nil {
 		return false, "", false, "", err
 	}
-	defer colRows.Close()
-	for colRows.Next() {
+	if col != "" {
+		return true, col, false, "", nil
+	}
+	if col := pgNumericPrimaryKey(ctx, conn, table); col != "" {
+		return false, "", true, col, nil
+	}
+	return false, "", false, "", nil
+}
+
+// pgFirstTimestampColumn returns the table's first date or timestamp column, or "".
+func pgFirstTimestampColumn(ctx context.Context, conn *pgx.Conn, table string) (string, error) {
+	rows, err := conn.Query(ctx,
+		`SELECT column_name, data_type FROM information_schema.columns WHERE table_name = $1`, table)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	for rows.Next() {
 		var name, typ string
-		if err := colRows.Scan(&name, &typ); err == nil {
-			if strings.Contains(strings.ToLower(typ), "timestamp") || strings.Contains(strings.ToLower(typ), "date") {
-				return true, name, false, "", nil
-			}
+		if err := rows.Scan(&name, &typ); err != nil {
+			continue
+		}
+		if lt := strings.ToLower(typ); strings.Contains(lt, "timestamp") || strings.Contains(lt, "date") {
+			return name, nil
 		}
 	}
-	// 2. Fallback: Try numeric PK
-	query := `
+	return "", nil
+}
+
+// pgNumericPrimaryKey returns the table's first integer primary-key column, or "".
+func pgNumericPrimaryKey(ctx context.Context, conn *pgx.Conn, table string) string {
+	rows, err := conn.Query(ctx, `
 		SELECT a.attname, format_type(a.atttypid, a.atttypmod)
 		FROM pg_index i
 		JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
-		WHERE i.indrelid = $1::regclass AND i.indisprimary
-	`
-	rows, err := conn.Query(ctx, query, table)
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var colName, dataType string
-			if err := rows.Scan(&colName, &dataType); err == nil {
-				if strings.Contains(dataType, "int") { // int2/int4/int8
-					return false, "", true, colName, nil
-				}
-			}
+		WHERE i.indrelid = $1::regclass AND i.indisprimary`, table)
+	if err != nil {
+		return ""
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var col, dataType string
+		if err := rows.Scan(&col, &dataType); err == nil && strings.Contains(dataType, "int") { // int2/int4/int8
+			return col
 		}
 	}
-	// 3. No timestamp or numeric PK found
-	return false, "", false, "", nil
+	return ""
 }

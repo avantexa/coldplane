@@ -44,24 +44,7 @@ func archiveTable(ctx context.Context, db *sql.DB, store FileStore, table, where
 	progress := &ProgressTracker{Table: table}
 	partitionColumnUsed := mysqlPartitionColumn(db, table)
 
-	hasID, idColumn, hasTime, timeColumn, err := DetectChunkingColumn(db, table)
-	if err != nil {
-		return nil, "", fmt.Errorf("[archive-mysql] failed to detect chunk column: %w", err)
-	}
-
-	var n int
-	var query func(i int) string
-	switch {
-	case hasID:
-		n, query, err = mysqlIDChunks(db, table, where, idColumn, opts.ChunkSize, progress)
-	case hasTime:
-		n, query, err = mysqlTimeChunks(db, table, where, timeColumn, progress)
-	default:
-		if partitionColumnUsed == "" {
-			partitionColumnUsed = detectMySQLDatetimeColumn(db, table)
-		}
-		n, query, err = mysqlOffsetChunks(db, table, where, opts.ChunkSize, progress)
-	}
+	n, query, err := mysqlChunkPlan(db, table, where, opts.ChunkSize, progress, &partitionColumnUsed)
 	if err != nil {
 		return nil, partitionColumnUsed, err
 	}
@@ -83,6 +66,27 @@ func archiveTable(ctx context.Context, db *sql.DB, store FileStore, table, where
 	}
 	fmt.Printf("[summary] Table %s: %d rows archived in %d chunks\n", table, progress.DoneRows, progress.DoneChunks)
 	return uploadedKeys, partitionColumnUsed, nil
+}
+
+// mysqlChunkPlan detects the chunking column and plans the chunks for it,
+// returning the chunk count and the per-chunk query builder. In the
+// OFFSET/LIMIT fallback it also tries the schema for a partition column.
+func mysqlChunkPlan(db *sql.DB, table, where string, chunkSize int, progress *ProgressTracker, partitionColumn *string) (int, func(int) string, error) {
+	hasID, idColumn, hasTime, timeColumn, err := DetectChunkingColumn(db, table)
+	if err != nil {
+		return 0, nil, fmt.Errorf("[archive-mysql] failed to detect chunk column: %w", err)
+	}
+	switch {
+	case hasID:
+		return mysqlIDChunks(db, table, where, idColumn, chunkSize, progress)
+	case hasTime:
+		return mysqlTimeChunks(db, table, where, timeColumn, progress)
+	default:
+		if *partitionColumn == "" {
+			*partitionColumn = detectMySQLDatetimeColumn(db, table)
+		}
+		return mysqlOffsetChunks(db, table, where, chunkSize, progress)
+	}
 }
 
 // mysqlPartitionColumn infers the partition column from the first
