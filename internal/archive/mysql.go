@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -15,23 +16,6 @@ import (
 	"github.com/xitongsys/parquet-go/parquet"
 	"github.com/xitongsys/parquet-go/writer"
 )
-
-// tryParseTime attempts to parse a string into time.Time using multiple formats.
-func tryParseTime(val string) (time.Time, error) {
-	formats := []string{
-		"2006-01-02 15:04:05",
-		"2006-01-02T15:04:05Z",
-		"2006-01-02T15:04:05.000Z",
-		"2006-01-02",
-	}
-	for _, f := range formats {
-		if t, err := time.Parse(f, val); err == nil {
-			return t, nil
-		}
-	}
-	return time.Time{}, fmt.Errorf("could not parse time: %s", val)
-
-}
 
 // ArchiveMySQL archives one or more tables into local Parquet files under a single backup name.
 func ArchiveMySQL(ctx context.Context, dsn string, tables []string, name string, opts ArchiveOptions) error {
@@ -111,358 +95,180 @@ func ArchiveMySQL(ctx context.Context, dsn string, tables []string, name string,
 
 // archiveTable handles chunking, processing, and storing for a single table.
 func archiveTable(ctx context.Context, db *sql.DB, store FileStore, table, where, partitionColumnFlag string, opts ArchiveOptions) ([]map[string]interface{}, error) {
-
-	// Progress tracker for this table
 	progress := &ProgressTracker{Table: table}
+	partitionColumnUsed := mysqlPartitionColumn(db, table, partitionColumnFlag)
 
-	// Infer partitionColumn at the very beginning
-	partitionColumnUsed := partitionColumnFlag
-	colRows, err := db.Query(fmt.Sprintf("SELECT * FROM %s LIMIT 1", quoteMySQLIdentifier(table)))
-	var tableColumns []string
-	var inferredPartitionColumn string
-	if err == nil {
-		defer colRows.Close()
-		tableColumns, err = colRows.Columns()
-		if err == nil && colRows.Next() {
-			vals := make([]interface{}, len(tableColumns))
-			valPtrs := make([]interface{}, len(tableColumns))
-			for i := range tableColumns {
-				valPtrs[i] = &vals[i]
-			}
-			if err := colRows.Scan(valPtrs...); err == nil {
-				for i, v := range vals {
-					var t time.Time
-					switch val := v.(type) {
-					case time.Time:
-						t = val
-					case string:
-						t, _ = tryParseTime(val)
-					case []byte:
-						t, _ = tryParseTime(string(val))
-					}
-					if !t.IsZero() {
-						inferredPartitionColumn = tableColumns[i]
-						fmt.Printf("[INFO] Inferred partition column '%s' from first row.\n", inferredPartitionColumn)
-						break
-					}
-				}
-			}
-		}
-	}
-	// Validate user-provided partitionColumn
-	validPartition := false
-	if partitionColumnUsed != "" {
-		for _, col := range tableColumns {
-			if col == partitionColumnUsed {
-				validPartition = true
-				break
-			}
-		}
-		if !validPartition {
-			fmt.Printf("[WARNING] Provided partition column '%s' not found in table. Will attempt to infer.\n", partitionColumnUsed)
-			partitionColumnUsed = ""
-		}
-	}
-	if partitionColumnUsed == "" {
-		partitionColumnUsed = inferredPartitionColumn
-	}
-	if partitionColumnUsed == "" {
-		fmt.Printf("[WARNING] No valid datetime column found in first row. Partitioning will fallback to 'unknown'.\n")
-	}
-
-	// Detect chunking column and set hasID, idColumn, hasTime, timeColumn for chunking logic
 	hasID, idColumn, hasTime, timeColumn, err := DetectChunkingColumn(db, table)
 	if err != nil {
 		return nil, fmt.Errorf("[archive-mysql] failed to detect chunk column: %w", err)
 	}
 
-	chunkSize := opts.ChunkSize
-	workerCount := opts.Workers
-	errCh := make(chan error, workerCount*2)
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, workerCount)
+	var n int
+	var query func(i int) string
+	switch {
+	case hasID:
+		n, query, err = mysqlIDChunks(db, table, where, idColumn, opts.ChunkSize, progress)
+	case hasTime:
+		n, query, err = mysqlTimeChunks(db, table, where, timeColumn, progress)
+	default:
+		if partitionColumnUsed == "" {
+			partitionColumnUsed = detectMySQLDatetimeColumn(db, table)
+		}
+		n, query, err = mysqlOffsetChunks(db, table, where, opts.ChunkSize, progress)
+	}
+	if err != nil {
+		return nil, err
+	}
 
-	// Collect all uploaded parquet keys for manifest
 	var uploadedKeysMu sync.Mutex
 	var uploadedKeys []map[string]interface{}
-
-	// PK chunking
-	if hasID {
-		var minID, maxID int64
-		idRangeQuery := fmt.Sprintf("SELECT MIN(%s), MAX(%s) FROM %s", quoteMySQLIdentifier(idColumn), quoteMySQLIdentifier(idColumn), quoteMySQLIdentifier(table))
-		if where != "" {
-			idRangeQuery += " WHERE " + where
-		}
-		if err := db.QueryRow(idRangeQuery).Scan(&minID, &maxID); err != nil {
-			return nil, fmt.Errorf("[archive-mysql] failed to get min/max id: %w", err)
-		}
-		if minID > maxID {
-			var totalCount int
-			_ = db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", quoteMySQLIdentifier(table))).Scan(&totalCount)
-			if totalCount == 0 {
-				fmt.Printf("[archive-mysql] Table %s is empty (0 rows)\n", table)
-			} else {
-				fmt.Printf("[archive-mysql] Table %s has %d rows but none match the ID range\n", table, totalCount)
-			}
-			fmt.Printf("[summary] Table %s: %d rows archived in %d chunks\n", table, progress.DoneRows, progress.DoneChunks)
-			return uploadedKeys, nil
-		}
-		// Set total rows based on PK range
-		progress.TotalRows = maxID - minID + 1
-		fmt.Printf("[archive-mysql] Using %q for chunking (min: %d, max: %d)\n", idColumn, minID, maxID)
-		cs := int64(chunkSize)
-		numChunks := ((maxID - minID + 1) + cs - 1) / cs
-		progress.TotalChunks = int(numChunks)
-		progress.TotalRows = maxID - minID + 1
-		for i := int64(0); i < numChunks; i++ {
-			startID := minID + i*cs
-			endID := startID + cs
-			if endID > maxID+1 {
-				endID = maxID + 1
-			}
-			wg.Add(1)
-			sem <- struct{}{}
-			go func(chunkNum int64, startID, endID int64) {
-				defer wg.Done()
-				defer func() { <-sem }()
-				if err := processMySQLChunkIndex(
-					ctx, db, table, where, idColumn, startID, endID, int(chunkNum),
-					partitionColumnUsed, store, &uploadedKeysMu, &uploadedKeys, progress,
-				); err != nil {
-					errCh <- fmt.Errorf("[worker %d] %w", chunkNum, err)
-				}
-			}(i, startID, endID)
-		}
-		wg.Wait()
-		close(errCh)
-		var firstErr error
-		for err := range errCh {
-			if err != nil && firstErr == nil {
-				firstErr = err
-			}
-		}
-		if firstErr != nil {
-			return nil, firstErr
-		}
-		fmt.Printf("[summary] Table %s: %d rows archived in %d chunks\n", table, progress.DoneRows, progress.DoneChunks)
-		return uploadedKeys, nil
+	err = runChunks(n, opts.Workers, func(i int) error {
+		return processMySQLChunkGeneric(ctx, db, query(i), table, i, partitionColumnUsed, store, &uploadedKeysMu, &uploadedKeys, progress)
+	})
+	if err != nil {
+		return nil, err
 	}
-
-	// Time chunking
-	if hasTime {
-		var minTimeStr, maxTimeStr sql.NullString
-		timeRangeQuery := fmt.Sprintf("SELECT MIN(%s), MAX(%s) FROM %s", quoteMySQLIdentifier(timeColumn), quoteMySQLIdentifier(timeColumn), quoteMySQLIdentifier(table))
-		if where != "" {
-			timeRangeQuery += " WHERE " + where
-		}
-		if err := db.QueryRow(timeRangeQuery).Scan(&minTimeStr, &maxTimeStr); err != nil {
-			return nil, fmt.Errorf("[archive-mysql] failed to get min/max timestamp: %w", err)
-		}
-
-		if !minTimeStr.Valid || !maxTimeStr.Valid {
-			var totalCount int
-			_ = db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", quoteMySQLIdentifier(table))).Scan(&totalCount)
-			if totalCount == 0 {
-				fmt.Printf("[archive-mysql] Table %s is empty (0 rows)\n", table)
-			} else {
-				fmt.Printf("[archive-mysql] Table %s has %d rows but none match the time range\n", table, totalCount)
-			}
-			fmt.Printf("[summary] Table %s: %d rows archived in %d chunks\n", table, progress.DoneRows, progress.DoneChunks)
-			return uploadedKeys, nil
-		}
-
-		var minTime, maxTime time.Time
-		var errMin, errMax error
-		formats := []string{
-			"2006-01-02 15:04:05",
-			"2006-01-02T15:04:05Z",
-			"2006-01-02",
-		}
-		for _, f := range formats {
-			if minTime, errMin = time.Parse(f, minTimeStr.String); errMin == nil {
-				break
-			}
-		}
-		for _, f := range formats {
-			if maxTime, errMax = time.Parse(f, maxTimeStr.String); errMax == nil {
-				break
-			}
-		}
-		if errMin != nil || errMax != nil {
-			return uploadedKeys, fmt.Errorf("[archive-mysql] failed to parse min/max timestamp: min: %v max: %v", errMin, errMax)
-		}
-
-		if minTime.After(maxTime) {
-			var totalCount int
-			_ = db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", quoteMySQLIdentifier(table))).Scan(&totalCount)
-			if totalCount == 0 {
-				fmt.Printf("[archive-mysql] Table %s is empty (0 rows)\n", table)
-			} else {
-				fmt.Printf("[archive-mysql] Table %s has %d rows but none match the time range\n", table, totalCount)
-			}
-			fmt.Printf("[summary] Table %s: %d rows archived in %d chunks\n", table, progress.DoneRows, progress.DoneChunks)
-			return uploadedKeys, nil
-		}
-
-		totalDuration := maxTime.Sub(minTime)
-		defaultWindow := 30 * 24 * time.Hour // 1 month
-		window := defaultWindow
-		maxChunks := 120
-
-		estChunks := int(totalDuration/window) + 1
-		if estChunks > maxChunks {
-			window = time.Duration(totalDuration.Nanoseconds() / int64(maxChunks))
-			fmt.Printf("[archive-mysql] Large date range detected; increasing chunk window to %s\n", window)
-			estChunks = int(totalDuration/window) + 1
-		}
-
-		progress.TotalChunks = estChunks
-		fmt.Printf("[archive-mysql] Using %q for time chunking (min: %s, max: %s) with window %s (%d chunks expected)\n",
-			timeColumn, minTime.Format(time.RFC3339), maxTime.Format(time.RFC3339), window, estChunks)
-
-		chunkNum := 0
-		t0 := minTime
-		for t0.Before(maxTime) {
-			t1 := t0.Add(window)
-			// Include rows where ts == maxTime on the last chunk.
-			if t1.After(maxTime) || t1.Equal(maxTime) {
-				t1 = maxTime.Add(time.Second)
-			}
-			t0Copy := t0
-			t1Copy := t1
-			chunkNumCopy := chunkNum
-			wg.Add(1)
-			sem <- struct{}{}
-			go func(chunkNum int, t0, t1 time.Time) {
-				defer wg.Done()
-				defer func() { <-sem }()
-				if err := processMySQLChunkTime(
-					ctx, db, table, where, timeColumn, t0, t1, chunkNum, partitionColumnUsed, store, &uploadedKeysMu, &uploadedKeys, progress,
-				); err != nil {
-					errCh <- fmt.Errorf("[worker %d] %w", chunkNum, err)
-				}
-			}(chunkNumCopy, t0Copy, t1Copy)
-			t0 = t1
-			chunkNum++
-		}
-
-		// After all chunking blocks, collect errors and write manifest if successful
-		wg.Wait()
-		close(errCh)
-		var firstErr error
-		for err := range errCh {
-			if err != nil && firstErr == nil {
-				firstErr = err
-			}
-		}
-		if firstErr != nil {
-			return uploadedKeys, firstErr
-		}
-		fmt.Printf("[summary] Table %s: %d rows archived in %d chunks\n", table, progress.DoneRows, progress.DoneChunks)
-		return uploadedKeys, nil
-	}
-
-	// If --partition-column wasn't provided, attempt to detect a DATETIME column for partitioning
-	if partitionColumnUsed == "" {
-		foundDatetime := false
-		rows, err := db.Query(fmt.Sprintf("SHOW COLUMNS FROM %s", quoteMySQLIdentifier(table)))
-		if err == nil {
-			for rows.Next() {
-				var field, colType, null, key, def, extra string
-				if err := rows.Scan(&field, &colType, &null, &key, &def, &extra); err == nil {
-					t := strings.ToLower(colType)
-					if strings.Contains(t, "datetime") || strings.Contains(t, "timestamp") {
-						partitionColumnUsed = field
-						fmt.Printf("[WARN] No --partition-column provided. Detected DATETIME column '%s' for partitioning.\n", field)
-						foundDatetime = true
-						break
-					}
-				}
-			}
-			rows.Close()
-		}
-		if !foundDatetime {
-			fmt.Printf("[WARN] No --partition-column or DATETIME column detected. Partitioning may default to 'unknown'.\n")
-		}
-	}
-
-	// Fallback: OFFSET/LIMIT
-	fmt.Println("[archive-mysql] Fallback: using OFFSET/LIMIT chunking (no PK or timestamp found)")
-	var totalRows int
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM %s", quoteMySQLIdentifier(table))
-	if where != "" {
-		countQuery += " WHERE " + where
-	}
-	if err := db.QueryRow(countQuery).Scan(&totalRows); err != nil {
-		return nil, fmt.Errorf("[archive-mysql] failed to count rows: %w", err)
-	}
-	fmt.Printf("[archive-mysql] Row count: %d\n", totalRows)
-	numChunks := (totalRows + chunkSize - 1) / chunkSize
-	progress.TotalRows = int64(totalRows)
-	progress.TotalChunks = numChunks
-	for i := 0; i < numChunks; i++ {
-		offset := i * chunkSize
-		limit := chunkSize
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(chunkNum, offset, limit int) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			if err := processMySQLChunkOffset(
-				ctx, db, table, where, offset, limit, chunkNum, partitionColumnUsed, store, &uploadedKeysMu, &uploadedKeys, progress,
-			); err != nil {
-				errCh <- fmt.Errorf("[worker %d] %w", chunkNum, err)
-			}
-		}(i, offset, limit)
-	}
-	wg.Wait()
-	close(errCh)
-	var firstErr error
-	for err := range errCh {
-		if err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	if firstErr != nil {
-		return nil, firstErr
-	}
-	fmt.Printf("[archive-mysql] All %d chunks processed and stored (offset/limit mode).\n", numChunks)
 	fmt.Printf("[summary] Table %s: %d rows archived in %d chunks\n", table, progress.DoneRows, progress.DoneChunks)
 	return uploadedKeys, nil
 }
-func processMySQLChunkIndex(ctx context.Context, db *sql.DB, table, where, idColumn string, startID, endID int64, chunkNum int, partitionColumn string, store FileStore, uploadedKeysMu *sync.Mutex, uploadedKeys *[]map[string]interface{}, progress *ProgressTracker) error {
-	quotedTable := quoteMySQLIdentifier(table)
-	quotedID := quoteMySQLIdentifier(idColumn)
-	query := fmt.Sprintf("SELECT * FROM %s WHERE (%s >= %d AND %s < %d)",
-		quotedTable, quotedID, startID, quotedID, endID)
-	if where != "" {
-		query = fmt.Sprintf("SELECT * FROM %s WHERE (%s) AND (%s >= %d AND %s < %d)",
-			quotedTable, where, quotedID, startID, quotedID, endID)
+
+// mysqlPartitionColumn validates the requested partition column against the
+// table, or infers one from the first datetime-looking value of the first row.
+func mysqlPartitionColumn(db *sql.DB, table, requested string) string {
+	columns, firstRow := mysqlSampleRow(db, table)
+	if requested != "" {
+		if containsString(columns, requested) {
+			return requested
+		}
+		fmt.Printf("[WARNING] Provided partition column '%s' not found in table. Will attempt to infer.\n", requested)
 	}
-	return processMySQLChunkGeneric(ctx, db, query, table, chunkNum, partitionColumn, store, uploadedKeysMu, uploadedKeys, progress)
+	if col := firstTimeColumn(columns, firstRow); col != "" {
+		fmt.Printf("[INFO] Inferred partition column '%s' from first row.\n", col)
+		return col
+	}
+	fmt.Printf("[WARNING] No valid datetime column found in first row. Partitioning will fallback to 'unknown'.\n")
+	return ""
 }
 
-func processMySQLChunkTime(ctx context.Context, db *sql.DB, table, where, timeColumn string, t0, t1 time.Time, chunkNum int, partitionColumn string, store FileStore, uploadedKeysMu *sync.Mutex, uploadedKeys *[]map[string]interface{}, progress *ProgressTracker) error {
-	quotedTable := quoteMySQLIdentifier(table)
-	quotedTime := quoteMySQLIdentifier(timeColumn)
-	t0Str := t0.Format("2006-01-02 15:04:05")
-	t1Str := t1.Format("2006-01-02 15:04:05")
-	query := fmt.Sprintf("SELECT * FROM %s WHERE (%s >= '%s' AND %s < '%s')",
-		quotedTable, quotedTime, t0Str, quotedTime, t1Str)
-	if where != "" {
-		query = fmt.Sprintf("SELECT * FROM %s WHERE (%s) AND (%s >= '%s' AND %s < '%s')",
-			quotedTable, where, quotedTime, t0Str, quotedTime, t1Str)
+// mysqlSampleRow returns the table's column names and the values of its first
+// row, or a nil row when the table is empty or cannot be read.
+func mysqlSampleRow(db *sql.DB, table string) ([]string, []interface{}) {
+	rows, err := db.Query(fmt.Sprintf("SELECT * FROM %s LIMIT 1", quoteMySQLIdentifier(table)))
+	if err != nil {
+		return nil, nil
 	}
-	return processMySQLChunkGeneric(ctx, db, query, table, chunkNum, partitionColumn, store, uploadedKeysMu, uploadedKeys, progress)
+	defer rows.Close()
+	columns, err := rows.Columns()
+	if err != nil || !rows.Next() {
+		return columns, nil
+	}
+	vals := make([]interface{}, len(columns))
+	ptrs := make([]interface{}, len(columns))
+	for i := range vals {
+		ptrs[i] = &vals[i]
+	}
+	if err := rows.Scan(ptrs...); err != nil {
+		return columns, nil
+	}
+	return columns, vals
 }
 
-func processMySQLChunkOffset(ctx context.Context, db *sql.DB, table, where string, offset, limit, chunkNum int, partitionColumn string, store FileStore, uploadedKeysMu *sync.Mutex, uploadedKeys *[]map[string]interface{}, progress *ProgressTracker) error {
-	query := fmt.Sprintf("SELECT * FROM %s", quoteMySQLIdentifier(table))
-	if where != "" {
-		query += " WHERE " + where
+// detectMySQLDatetimeColumn returns the first DATETIME/TIMESTAMP column of the
+// table by schema, for partitioning when the first row offered no hint.
+func detectMySQLDatetimeColumn(db *sql.DB, table string) string {
+	rows, err := db.Query(fmt.Sprintf("SHOW COLUMNS FROM %s", quoteMySQLIdentifier(table)))
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var field, colType, null, key, def, extra sql.NullString
+			if err := rows.Scan(&field, &colType, &null, &key, &def, &extra); err != nil {
+				continue
+			}
+			t := strings.ToLower(colType.String)
+			if strings.Contains(t, "datetime") || strings.Contains(t, "timestamp") {
+				fmt.Printf("[WARN] No --partition-column provided. Detected DATETIME column '%s' for partitioning.\n", field.String)
+				return field.String
+			}
+		}
 	}
-	query += fmt.Sprintf(" LIMIT %d OFFSET %d", limit, offset)
-	return processMySQLChunkGeneric(ctx, db, query, table, chunkNum, partitionColumn, store, uploadedKeysMu, uploadedKeys, progress)
+	fmt.Printf("[WARN] No --partition-column or DATETIME column detected. Partitioning may default to 'unknown'.\n")
+	return ""
+}
+
+// mysqlReportNoRows explains why a chunk plan came out empty.
+func mysqlReportNoRows(db *sql.DB, table, kind string) {
+	var total int
+	_ = db.QueryRow(mysqlCountQuery(table, "")).Scan(&total)
+	if total == 0 {
+		fmt.Printf("[archive-mysql] Table %s is empty (0 rows)\n", table)
+	} else {
+		fmt.Printf("[archive-mysql] Table %s has %d rows but none match the %s\n", table, total, kind)
+	}
+}
+
+// mysqlIDChunks plans primary-key range chunks and returns the per-chunk query.
+func mysqlIDChunks(db *sql.DB, table, where, idColumn string, chunkSize int, progress *ProgressTracker) (int, func(int) string, error) {
+	var minID, maxID sql.NullInt64
+	if err := db.QueryRow(mysqlMinMaxQuery(table, where, idColumn)).Scan(&minID, &maxID); err != nil {
+		return 0, nil, fmt.Errorf("[archive-mysql] failed to get min/max id: %w", err)
+	}
+	if !minID.Valid || !maxID.Valid || minID.Int64 > maxID.Int64 {
+		mysqlReportNoRows(db, table, "ID range")
+		return 0, nil, nil
+	}
+	plan := planIDChunks(minID.Int64, maxID.Int64, int64(chunkSize))
+	progress.TotalRows = maxID.Int64 - minID.Int64 + 1
+	progress.TotalChunks = len(plan)
+	fmt.Printf("[archive-mysql] Using %q for chunking (min: %d, max: %d)\n", idColumn, minID.Int64, maxID.Int64)
+	return len(plan), func(i int) string {
+		return mysqlRangeQuery(table, where, idColumn, strconv.FormatInt(plan[i].Start, 10), strconv.FormatInt(plan[i].End, 10))
+	}, nil
+}
+
+// mysqlTimeChunks plans time-window chunks and returns the per-chunk query.
+func mysqlTimeChunks(db *sql.DB, table, where, timeColumn string, progress *ProgressTracker) (int, func(int) string, error) {
+	var minStr, maxStr sql.NullString
+	if err := db.QueryRow(mysqlMinMaxQuery(table, where, timeColumn)).Scan(&minStr, &maxStr); err != nil {
+		return 0, nil, fmt.Errorf("[archive-mysql] failed to get min/max timestamp: %w", err)
+	}
+	if !minStr.Valid || !maxStr.Valid {
+		mysqlReportNoRows(db, table, "time range")
+		return 0, nil, nil
+	}
+	minTime, errMin := parseAnyTime(minStr.String)
+	maxTime, errMax := parseAnyTime(maxStr.String)
+	if errMin != nil || errMax != nil {
+		return 0, nil, fmt.Errorf("[archive-mysql] failed to parse min/max timestamp: min: %v max: %v", errMin, errMax)
+	}
+	if minTime.After(maxTime) {
+		mysqlReportNoRows(db, table, "time range")
+		return 0, nil, nil
+	}
+	window := timeWindow(maxTime.Sub(minTime), defaultTimeWindow, maxTimeChunks)
+	plan := planTimeChunks(minTime, maxTime, window, time.Second)
+	progress.TotalChunks = len(plan)
+	fmt.Printf("[archive-mysql] Using %q for time chunking (min: %s, max: %s) with window %s (%d chunks expected)\n",
+		timeColumn, minTime.Format(time.RFC3339), maxTime.Format(time.RFC3339), window, len(plan))
+	return len(plan), func(i int) string {
+		r := plan[i]
+		return mysqlRangeQuery(table, where, timeColumn, "'"+r.Start.Format(mysqlTimeLayout)+"'", "'"+r.End.Format(mysqlTimeLayout)+"'")
+	}, nil
+}
+
+// mysqlOffsetChunks plans LIMIT/OFFSET pages and returns the per-chunk query.
+func mysqlOffsetChunks(db *sql.DB, table, where string, chunkSize int, progress *ProgressTracker) (int, func(int) string, error) {
+	fmt.Println("[archive-mysql] Fallback: using OFFSET/LIMIT chunking (no PK or timestamp found)")
+	var totalRows int
+	if err := db.QueryRow(mysqlCountQuery(table, where)).Scan(&totalRows); err != nil {
+		return 0, nil, fmt.Errorf("[archive-mysql] failed to count rows: %w", err)
+	}
+	fmt.Printf("[archive-mysql] Row count: %d\n", totalRows)
+	plan := planOffsetChunks(totalRows, chunkSize)
+	progress.TotalRows = int64(totalRows)
+	progress.TotalChunks = len(plan)
+	return len(plan), func(i int) string {
+		return mysqlOffsetQuery(table, where, plan[i].Offset, plan[i].Limit)
+	}, nil
 }
 
 func processMySQLChunkGeneric(ctx context.Context, db *sql.DB, query, table string, chunkNum int, partitionColumn string, store FileStore, uploadedKeysMu *sync.Mutex, uploadedKeys *[]map[string]interface{}, progress *ProgressTracker) error {
@@ -525,7 +331,7 @@ func processMySQLChunkGeneric(ctx context.Context, db *sql.DB, query, table stri
 			t = v
 		case string:
 			var err error
-			t, err = tryParseTime(v)
+			t, err = parseAnyTime(v)
 			if err != nil {
 				if debug {
 					fmt.Printf("[DEBUG] getPartition: failed to parse string, type=%T value=%#v err=%v\n", raw, raw, err)
@@ -535,7 +341,7 @@ func processMySQLChunkGeneric(ctx context.Context, db *sql.DB, query, table stri
 		case []byte:
 			s := string(v)
 			var err error
-			t, err = tryParseTime(s)
+			t, err = parseAnyTime(s)
 			if err != nil {
 				if debug {
 					fmt.Printf("[DEBUG] getPartition: failed to parse []byte, type=%T value=%#v err=%v\n", raw, raw, err)

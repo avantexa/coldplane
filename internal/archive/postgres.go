@@ -22,317 +22,158 @@ import (
 
 // archivePostgresTable handles chunking, processing, and storing for a single table.
 func archivePostgresTable(ctx context.Context, pool *pgxpool.Pool, store FileStore, table, where, partitionColumn string, opts ArchiveOptions) ([]map[string]interface{}, string, error) {
-	// Progress tracker for this table
 	progress := &ProgressTracker{Table: table}
 
-	// Validate or infer partition column
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to acquire connection: %w", err)
 	}
 	defer conn.Release()
 
-	partitionColumnUsed := partitionColumn
-	colQuery := fmt.Sprintf("SELECT * FROM %s LIMIT 1", quotePGIdentifier(table))
-	rows, err := conn.Query(ctx, colQuery)
-	if err == nil {
-		fieldDescs := rows.FieldDescriptions()
-		tableColumns := make([]string, len(fieldDescs))
-		for i, fd := range fieldDescs {
-			tableColumns[i] = fd.Name
-		}
-		valid := false
-		if partitionColumnUsed != "" {
-			for _, col := range tableColumns {
-				if col == partitionColumnUsed {
-					valid = true
-					break
-				}
-			}
-		}
-		if !valid {
-			// Infer from first row
-			if rows.Next() {
-				vals := make([]interface{}, len(tableColumns))
-				valPtrs := make([]interface{}, len(tableColumns))
-				for i := range tableColumns {
-					valPtrs[i] = &vals[i]
-				}
-				if err := rows.Scan(valPtrs...); err == nil {
-					for i, v := range vals {
-						switch val := v.(type) {
-						case time.Time:
-							partitionColumnUsed = tableColumns[i]
-						case string:
-							if _, err := time.Parse(time.RFC3339, val); err == nil {
-								partitionColumnUsed = tableColumns[i]
-							}
-						case []byte:
-							if _, err := time.Parse(time.RFC3339, string(val)); err == nil {
-								partitionColumnUsed = tableColumns[i]
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-	if partitionColumnUsed == "" {
-		fmt.Printf("[WARNING] Table %s: no valid partition column found or inferred.\n", table)
-	}
-	rows.Close()
+	partitionColumnUsed := pgPartitionColumn(ctx, conn, table, partitionColumn)
 
-	// Use one connection to detect chunking columns
-	conn2, err := pool.Acquire(ctx)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to acquire connection: %w", err)
-	}
-	defer conn2.Release()
-
-	hasTime, timeColumn, hasID, idColumn, err := DetectPostgresChunkingColumn(ctx, conn2.Conn(), table)
+	hasTime, timeColumn, hasID, idColumn, err := DetectPostgresChunkingColumn(ctx, conn.Conn(), table)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to detect chunk column: %w", err)
 	}
 
-	chunkSize := opts.ChunkSize
-	workerCount := opts.Workers
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, workerCount)
-	errCh := make(chan error, workerCount*2)
+	var n int
+	var query func(i int) (string, []interface{})
+	switch {
+	case hasTime:
+		n, query, err = pgTimeChunks(ctx, conn, table, where, timeColumn, progress)
+	case hasID:
+		n, query, err = pgIDChunks(ctx, conn, table, where, idColumn, opts.ChunkSize, progress)
+	default:
+		n, query, err = pgOffsetChunks(ctx, conn, table, where, opts.ChunkSize, progress)
+	}
+	if err != nil {
+		return nil, partitionColumnUsed, err
+	}
 
-	// Collect all uploaded parquet keys for manifest
 	var uploadedKeysMu sync.Mutex
 	var uploadedKeys []map[string]interface{}
-
-	// 1. TIME CHUNKING
-	if hasTime {
-		var minTime, maxTime sql.NullTime
-		timeRangeQuery := fmt.Sprintf("SELECT MIN(%s), MAX(%s) FROM %s", quotePGIdentifier(timeColumn), quotePGIdentifier(timeColumn), quotePGIdentifier(table))
-		if where != "" {
-			timeRangeQuery += " WHERE " + where
+	err = runChunks(n, opts.Workers, func(i int) error {
+		dbConn, err := pool.Acquire(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to acquire DB connection: %w", err)
 		}
-		if err := conn2.QueryRow(ctx, timeRangeQuery).Scan(&minTime, &maxTime); err != nil {
-			return nil, partitionColumnUsed, fmt.Errorf("failed to get min/max timestamp: %w", err)
+		defer dbConn.Release()
+		q, args := query(i)
+		rowCount, err := processPostgresChunkGeneric(ctx, dbConn.Conn(), q, args, table, i, partitionColumnUsed, &uploadedKeysMu, &uploadedKeys, store)
+		if err != nil {
+			return err
 		}
-		if !minTime.Valid || !maxTime.Valid || minTime.Time.After(maxTime.Time) {
-			var totalCount int
-			_ = conn2.QueryRow(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s", quotePGIdentifier(table))).Scan(&totalCount)
-			if totalCount == 0 {
-				fmt.Printf("[archive-postgres] Table %s is empty (0 rows)\n", table)
-			} else {
-				fmt.Printf("[archive-postgres] Table %s has %d rows but none match the time range\n", table, totalCount)
-			}
-			return uploadedKeys, partitionColumnUsed, nil
-		}
-		tMin := minTime.Time
-		tMax := maxTime.Time
-
-		totalDuration := tMax.Sub(tMin)
-		defaultWindow := 30 * 24 * time.Hour // 1 month
-		window := defaultWindow
-		maxChunks := 120
-
-		estChunks := int(totalDuration/window) + 1
-		if estChunks > maxChunks {
-			window = time.Duration(totalDuration.Nanoseconds() / int64(maxChunks))
-			fmt.Printf("[archive-postgres] Large date range; window set to %s\n", window)
-			estChunks = int(totalDuration / window)
-		}
-		progress.TotalChunks = estChunks
-
-		fmt.Printf("[archive-postgres] Using %q for time chunking: min=%s max=%s window=%s (%d chunks)\n", timeColumn, tMin.Format(time.RFC3339), tMax.Format(time.RFC3339), window, estChunks)
-
-		chunkNum := 0
-		t0 := tMin
-		for t0.Before(tMax) {
-			t1 := t0.Add(window)
-			// If this is the last chunk, nudge the upper bound so rows with ts == tMax are included.
-			// Postgres TIMESTAMP precision is microseconds, so +1µs is safe and minimal.
-			if t1.After(tMax) || t1.Equal(tMax) {
-				t1 = tMax.Add(time.Microsecond)
-			}
-			t0Copy, t1Copy, chunkNumCopy := t0, t1, chunkNum
-			wg.Add(1)
-			sem <- struct{}{}
-			go func(chunkNum int, t0, t1 time.Time) {
-				defer wg.Done()
-				defer func() { <-sem }()
-				dbConn, err := pool.Acquire(ctx)
-				if err != nil {
-					errCh <- fmt.Errorf("[worker %d] failed to acquire DB connection: %w", chunkNum, err)
-					return
-				}
-				defer dbConn.Release()
-				q := fmt.Sprintf("SELECT * FROM %s WHERE %s >= $1 AND %s < $2", quotePGIdentifier(table), quotePGIdentifier(timeColumn), quotePGIdentifier(timeColumn))
-				if where != "" {
-					q = fmt.Sprintf("SELECT * FROM %s WHERE (%s) AND (%s >= $1 AND %s < $2)", quotePGIdentifier(table), where, quotePGIdentifier(timeColumn), quotePGIdentifier(timeColumn))
-				}
-				rowCount, err := processPostgresChunkGeneric(ctx, dbConn.Conn(), q, []interface{}{t0, t1}, table, chunkNum, partitionColumnUsed, &uploadedKeysMu, &uploadedKeys, store)
-				if err != nil {
-					errCh <- fmt.Errorf("[worker %d] %w", chunkNum, err)
-				} else {
-					progress.AddRows(rowCount)
-					progress.ChunkDone()
-				}
-			}(chunkNumCopy, t0Copy, t1Copy)
-			t0 = t1
-			chunkNum++
-		}
-		wg.Wait()
-		close(errCh)
-
-		var firstErr error
-		for err := range errCh {
-			if err != nil {
-				fmt.Println("[ERROR]", err)
-				if firstErr == nil {
-					firstErr = err
-				}
-			}
-		}
-		if firstErr != nil {
-			return uploadedKeys, partitionColumnUsed, firstErr
-		}
-		fmt.Printf("[summary] Table %s: %d rows archived in %d chunks\n",
-			table, progress.DoneRows, progress.DoneChunks)
-		return uploadedKeys, partitionColumnUsed, nil
+		progress.AddRows(rowCount)
+		progress.ChunkDone()
+		return nil
+	})
+	if err != nil {
+		return uploadedKeys, partitionColumnUsed, err
 	}
+	fmt.Printf("[summary] Table %s: %d rows archived in %d chunks\n", table, progress.DoneRows, progress.DoneChunks)
+	return uploadedKeys, partitionColumnUsed, nil
+}
 
-	// 2. PK (ID) CHUNKING
-	if hasID {
-		var minID, maxID int64
-		idRangeQuery := fmt.Sprintf(`SELECT MIN(%s), MAX(%s) FROM %s`, quotePGIdentifier(idColumn), quotePGIdentifier(idColumn), quotePGIdentifier(table))
-		if where != "" {
-			idRangeQuery += " WHERE " + where
+// pgPartitionColumn validates the requested partition column against the
+// table, or infers one from the last timestamp-looking value of the first row.
+func pgPartitionColumn(ctx context.Context, conn *pgxpool.Conn, table, requested string) string {
+	rows, err := conn.Query(ctx, fmt.Sprintf("SELECT * FROM %s LIMIT 1", quotePGIdentifier(table)))
+	if err != nil {
+		if requested == "" {
+			fmt.Printf("[WARNING] Table %s: no valid partition column found or inferred.\n", table)
 		}
-		if err := conn2.QueryRow(ctx, idRangeQuery).Scan(&minID, &maxID); err != nil {
-			return nil, partitionColumnUsed, fmt.Errorf("failed to get min/max id: %w", err)
-		}
-		if minID > maxID {
-			var totalCount int
-			_ = conn2.QueryRow(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s", quotePGIdentifier(table))).Scan(&totalCount)
-			if totalCount == 0 {
-				fmt.Printf("[archive-postgres] Table %s is empty (0 rows)\n", table)
-			} else {
-				fmt.Printf("[archive-postgres] Table %s has %d rows but none match the ID range\n", table, totalCount)
-			}
-			return uploadedKeys, partitionColumnUsed, nil
-		}
-
-		cs := int64(chunkSize)
-		numChunks := ((maxID - minID + 1) + cs - 1) / cs
-		progress.TotalChunks = int(numChunks)
-		fmt.Printf("[archive-postgres] Using PK %q for chunking: min=%d max=%d, chunks=%d\n", idColumn, minID, maxID, numChunks)
-		for i := int64(0); i < numChunks; i++ {
-			startID := minID + i*cs
-			endID := startID + cs
-			if endID > maxID+1 {
-				endID = maxID + 1
-			}
-			wg.Add(1)
-			sem <- struct{}{}
-			go func(chunkNum int64, startID, endID int64) {
-				defer wg.Done()
-				defer func() { <-sem }()
-				dbConn, err := pool.Acquire(ctx)
-				if err != nil {
-					errCh <- fmt.Errorf("[worker %d] failed to acquire DB connection: %w", chunkNum, err)
-					return
-				}
-				defer dbConn.Release()
-				q := fmt.Sprintf("SELECT * FROM %s WHERE %s >= $1 AND %s < $2", quotePGIdentifier(table), quotePGIdentifier(idColumn), quotePGIdentifier(idColumn))
-				if where != "" {
-					q = fmt.Sprintf("SELECT * FROM %s WHERE (%s) AND (%s >= $1 AND %s < $2)", quotePGIdentifier(table), where, quotePGIdentifier(idColumn), quotePGIdentifier(idColumn))
-				}
-				rowCount, err := processPostgresChunkGeneric(ctx, dbConn.Conn(), q, []interface{}{startID, endID}, table, int(chunkNum), partitionColumnUsed, &uploadedKeysMu, &uploadedKeys, store)
-				if err != nil {
-					errCh <- fmt.Errorf("[worker %d] %w", chunkNum, err)
-				} else {
-					progress.AddRows(rowCount)
-					progress.ChunkDone()
-				}
-			}(i, startID, endID)
-		}
-		wg.Wait()
-		close(errCh)
-
-		var firstErr error
-		for err := range errCh {
-			if err != nil {
-				fmt.Println("[ERROR]", err)
-				if firstErr == nil {
-					firstErr = err
-				}
-			}
-		}
-		if firstErr != nil {
-			return uploadedKeys, partitionColumnUsed, firstErr
-		}
-		fmt.Printf("[summary] Table %s: %d rows archived in %d chunks\n",
-			table, progress.DoneRows, progress.DoneChunks)
-		return uploadedKeys, partitionColumnUsed, nil
+		return requested
 	}
+	defer rows.Close()
+	fieldDescs := rows.FieldDescriptions()
+	columns := make([]string, len(fieldDescs))
+	for i, fd := range fieldDescs {
+		columns[i] = fd.Name
+	}
+	if requested != "" && containsString(columns, requested) {
+		return requested
+	}
+	found := ""
+	if rows.Next() {
+		if vals, err := rows.Values(); err == nil {
+			found = lastTimeColumn(columns, vals)
+		}
+	}
+	if found == "" {
+		fmt.Printf("[WARNING] Table %s: no valid partition column found or inferred.\n", table)
+	}
+	return found
+}
 
-	// 3. OFFSET/LIMIT (fallback)
+// pgReportNoRows explains why a chunk plan came out empty.
+func pgReportNoRows(ctx context.Context, conn *pgxpool.Conn, table, kind string) {
+	var total int
+	_ = conn.QueryRow(ctx, pgCountQuery(table, "")).Scan(&total)
+	if total == 0 {
+		fmt.Printf("[archive-postgres] Table %s is empty (0 rows)\n", table)
+	} else {
+		fmt.Printf("[archive-postgres] Table %s has %d rows but none match the %s\n", table, total, kind)
+	}
+}
+
+// pgTimeChunks plans time-window chunks and returns the per-chunk query and arguments.
+func pgTimeChunks(ctx context.Context, conn *pgxpool.Conn, table, where, timeColumn string, progress *ProgressTracker) (int, func(int) (string, []interface{}), error) {
+	var minT, maxT sql.NullTime
+	if err := conn.QueryRow(ctx, pgMinMaxQuery(table, where, timeColumn)).Scan(&minT, &maxT); err != nil {
+		return 0, nil, fmt.Errorf("failed to get min/max timestamp: %w", err)
+	}
+	if !minT.Valid || !maxT.Valid || minT.Time.After(maxT.Time) {
+		pgReportNoRows(ctx, conn, table, "time range")
+		return 0, nil, nil
+	}
+	window := timeWindow(maxT.Time.Sub(minT.Time), defaultTimeWindow, maxTimeChunks)
+	// Postgres TIMESTAMP precision is microseconds, so +1µs is the minimal nudge.
+	plan := planTimeChunks(minT.Time, maxT.Time, window, time.Microsecond)
+	progress.TotalChunks = len(plan)
+	fmt.Printf("[archive-postgres] Using %q for time chunking: min=%s max=%s window=%s (%d chunks)\n",
+		timeColumn, minT.Time.Format(time.RFC3339), maxT.Time.Format(time.RFC3339), window, len(plan))
+	sel := pgRangeQuery(table, where, timeColumn)
+	return len(plan), func(i int) (string, []interface{}) {
+		return sel, []interface{}{plan[i].Start, plan[i].End}
+	}, nil
+}
+
+// pgIDChunks plans primary-key range chunks and returns the per-chunk query and arguments.
+func pgIDChunks(ctx context.Context, conn *pgxpool.Conn, table, where, idColumn string, chunkSize int, progress *ProgressTracker) (int, func(int) (string, []interface{}), error) {
+	var minID, maxID sql.NullInt64
+	if err := conn.QueryRow(ctx, pgMinMaxQuery(table, where, idColumn)).Scan(&minID, &maxID); err != nil {
+		return 0, nil, fmt.Errorf("failed to get min/max id: %w", err)
+	}
+	if !minID.Valid || !maxID.Valid || minID.Int64 > maxID.Int64 {
+		pgReportNoRows(ctx, conn, table, "ID range")
+		return 0, nil, nil
+	}
+	plan := planIDChunks(minID.Int64, maxID.Int64, int64(chunkSize))
+	progress.TotalRows = maxID.Int64 - minID.Int64 + 1
+	progress.TotalChunks = len(plan)
+	fmt.Printf("[archive-postgres] Using PK %q for chunking: min=%d max=%d, chunks=%d\n", idColumn, minID.Int64, maxID.Int64, len(plan))
+	sel := pgRangeQuery(table, where, idColumn)
+	return len(plan), func(i int) (string, []interface{}) {
+		return sel, []interface{}{plan[i].Start, plan[i].End}
+	}, nil
+}
+
+// pgOffsetChunks plans LIMIT/OFFSET pages and returns the per-chunk query and arguments.
+func pgOffsetChunks(ctx context.Context, conn *pgxpool.Conn, table, where string, chunkSize int, progress *ProgressTracker) (int, func(int) (string, []interface{}), error) {
 	fmt.Println("[archive-postgres] Fallback: OFFSET/LIMIT chunking")
 	var totalRows int
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM %s", quotePGIdentifier(table))
-	if where != "" {
-		countQuery += " WHERE " + where
+	if err := conn.QueryRow(ctx, pgCountQuery(table, where)).Scan(&totalRows); err != nil {
+		return 0, nil, fmt.Errorf("failed to count rows: %w", err)
 	}
-	if err := conn2.QueryRow(ctx, countQuery).Scan(&totalRows); err != nil {
-		return nil, partitionColumnUsed, fmt.Errorf("failed to count rows: %w", err)
-	}
-	numChunks := (totalRows + int(chunkSize) - 1) / int(chunkSize)
-	progress.TotalChunks = numChunks
+	plan := planOffsetChunks(totalRows, chunkSize)
 	progress.TotalRows = int64(totalRows)
-	fmt.Printf("[archive-postgres] Row count: %d; Chunks: %d\n", totalRows, numChunks)
-
-	for i := 0; i < numChunks; i++ {
-		offset := i * int(chunkSize)
-		limit := int(chunkSize)
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(chunkNum, offset, limit int) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			dbConn, err := pool.Acquire(ctx)
-			if err != nil {
-				errCh <- fmt.Errorf("[worker %d] failed to acquire DB connection: %w", chunkNum, err)
-				return
-			}
-			defer dbConn.Release()
-			q := fmt.Sprintf("SELECT * FROM %s LIMIT $1 OFFSET $2", quotePGIdentifier(table))
-			if where != "" {
-				q = fmt.Sprintf("SELECT * FROM %s WHERE %s LIMIT $1 OFFSET $2", quotePGIdentifier(table), where)
-			}
-			rowCount, err := processPostgresChunkGeneric(ctx, dbConn.Conn(), q, []interface{}{limit, offset}, table, chunkNum, partitionColumnUsed, &uploadedKeysMu, &uploadedKeys, store)
-			if err != nil {
-				errCh <- fmt.Errorf("[worker %d] %w", chunkNum, err)
-			} else {
-				progress.AddRows(rowCount)
-				progress.ChunkDone()
-			}
-		}(i, offset, limit)
-	}
-	wg.Wait()
-	close(errCh)
-
-	var firstErr error
-	for err := range errCh {
-		if err != nil {
-			fmt.Println("[ERROR]", err)
-			if firstErr == nil {
-				firstErr = err
-			}
-		}
-	}
-	if firstErr != nil {
-		return uploadedKeys, partitionColumnUsed, firstErr
-	}
-	fmt.Printf("[summary] Table %s: %d rows archived in %d chunks\n",
-		table, progress.DoneRows, progress.DoneChunks)
-	return uploadedKeys, partitionColumnUsed, nil
+	progress.TotalChunks = len(plan)
+	fmt.Printf("[archive-postgres] Row count: %d; Chunks: %d\n", totalRows, len(plan))
+	sel := pgOffsetQuery(table, where)
+	return len(plan), func(i int) (string, []interface{}) {
+		return sel, []interface{}{plan[i].Limit, plan[i].Offset}
+	}, nil
 }
 
 // ArchivePostgres archives one or more tables into local Parquet files under a single backup name.
