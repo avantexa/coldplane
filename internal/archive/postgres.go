@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"path"
 	"strings"
 	"sync"
 	"time"
@@ -17,7 +16,7 @@ import (
 )
 
 // archivePostgresTable handles chunking, processing, and storing for a single table.
-func archivePostgresTable(ctx context.Context, pool *pgxpool.Pool, store FileStore, table, where, partitionColumn string, opts ArchiveOptions) ([]map[string]interface{}, string, error) {
+func archivePostgresTable(ctx context.Context, pool *pgxpool.Pool, store FileStore, table, where string, opts ArchiveOptions) ([]map[string]interface{}, string, error) {
 	progress := &ProgressTracker{Table: table}
 
 	conn, err := pool.Acquire(ctx)
@@ -26,7 +25,7 @@ func archivePostgresTable(ctx context.Context, pool *pgxpool.Pool, store FileSto
 	}
 	defer conn.Release()
 
-	partitionColumnUsed := pgPartitionColumn(ctx, conn, table, partitionColumn)
+	partitionColumnUsed := pgPartitionColumn(ctx, conn, table)
 
 	hasTime, timeColumn, hasID, idColumn, err := DetectPostgresChunkingColumn(ctx, conn.Conn(), table)
 	if err != nil {
@@ -72,24 +71,19 @@ func archivePostgresTable(ctx context.Context, pool *pgxpool.Pool, store FileSto
 	return uploadedKeys, partitionColumnUsed, nil
 }
 
-// pgPartitionColumn validates the requested partition column against the
-// table, or infers one from the last timestamp-looking value of the first row.
-func pgPartitionColumn(ctx context.Context, conn *pgxpool.Conn, table, requested string) string {
+// pgPartitionColumn infers the partition column from the last
+// timestamp-looking value of the table's first row.
+func pgPartitionColumn(ctx context.Context, conn *pgxpool.Conn, table string) string {
 	rows, err := conn.Query(ctx, fmt.Sprintf("SELECT * FROM %s LIMIT 1", quotePGIdentifier(table)))
 	if err != nil {
-		if requested == "" {
-			fmt.Printf("[WARNING] Table %s: no valid partition column found or inferred.\n", table)
-		}
-		return requested
+		fmt.Printf("[WARNING] Table %s: no valid partition column found or inferred.\n", table)
+		return ""
 	}
 	defer rows.Close()
 	fieldDescs := rows.FieldDescriptions()
 	columns := make([]string, len(fieldDescs))
 	for i, fd := range fieldDescs {
 		columns[i] = fd.Name
-	}
-	if requested != "" && containsString(columns, requested) {
-		return requested
 	}
 	found := ""
 	if rows.Next() {
@@ -174,17 +168,10 @@ func pgOffsetChunks(ctx context.Context, conn *pgxpool.Conn, table, where string
 }
 
 // ArchivePostgres archives one or more tables into local Parquet files under a single backup name.
-func ArchivePostgres(ctx context.Context, dbURL string, tables []string, name string, partitionColumns map[string]string, opts ArchiveOptions) error {
+func ArchivePostgres(ctx context.Context, dbURL string, tables []string, name string, opts ArchiveOptions) error {
 	fmt.Println("[archive-postgres] Starting archive process")
-
-	baseDir := opts.LocalOutputDir
-	if baseDir == "" {
-		baseDir = DefaultLocalBackupDir()
-	}
-	backupDir := path.Join(baseDir, name)
+	backupDir := backupDirFor(opts, name)
 	store := &LocalFileStore{BaseDir: backupDir}
-
-	dbName := ExtractDBName(dbURL)
 
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
@@ -193,65 +180,19 @@ func ArchivePostgres(ctx context.Context, dbURL string, tables []string, name st
 	defer pool.Close()
 
 	var manifestTables []map[string]interface{}
-
 	for _, table := range tables {
-		partCol := ""
-		if partitionColumns != nil {
-			if v, ok := partitionColumns[table]; ok {
-				partCol = v
-			}
-		}
-
-		files, actualPartCol, err := archivePostgresTable(ctx, pool, store, table, opts.Where, partCol, opts)
+		files, partCol, err := archivePostgresTable(ctx, pool, store, table, opts.Where, opts)
 		if err != nil {
 			return fmt.Errorf("[archive-postgres] failed to archive table %s: %w", table, err)
 		}
-
-		partColValue := interface{}(nil)
-		if actualPartCol != "" {
-			partColValue = actualPartCol
-		}
-
-		manifestTables = append(manifestTables, map[string]interface{}{
-			"name":             table,
-			"partition_column": partColValue,
-			"files":            files,
-		})
+		manifestTables = append(manifestTables, tableManifest(table, partCol, files))
 	}
 
-	// Compute total size
-	var totalSize int64
-	for _, t := range manifestTables {
-		if files, ok := t["files"].([]map[string]interface{}); ok {
-			for _, f := range files {
-				switch v := f["size_bytes"].(type) {
-				case int64:
-					totalSize += v
-				case int:
-					totalSize += int64(v)
-				case float64:
-					totalSize += int64(v)
-				}
-			}
-		}
-	}
-
-	// Write local manifest
-	manifest := map[string]interface{}{
-		"name":       name,
-		"db_type":    "postgres",
-		"db_name":    dbName,
-		"created_at": time.Now().UTC().Format(time.RFC3339),
-		"tables":     manifestTables,
-		"size_bytes": totalSize,
-		"local":      true,
-	}
-
-	if err := WriteLocalManifest(backupDir, manifest); err != nil {
+	total, err := writeBackupManifest(backupDir, name, "postgres", ExtractDBName(dbURL), manifestTables)
+	if err != nil {
 		return fmt.Errorf("[archive-postgres] failed to write local manifest: %w", err)
 	}
-
-	fmt.Printf("[archive-postgres] Backup complete: %s (%d bytes)\n", backupDir, totalSize)
+	fmt.Printf("[archive-postgres] Backup complete: %s (%d bytes)\n", backupDir, total)
 	return nil
 }
 

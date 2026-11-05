@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,15 +13,8 @@ import (
 // ArchiveMySQL archives one or more tables into local Parquet files under a single backup name.
 func ArchiveMySQL(ctx context.Context, dsn string, tables []string, name string, opts ArchiveOptions) error {
 	fmt.Println("[archive-mysql] Starting archive process")
-
-	baseDir := opts.LocalOutputDir
-	if baseDir == "" {
-		baseDir = DefaultLocalBackupDir()
-	}
-	backupDir := path.Join(baseDir, name)
+	backupDir := backupDirFor(opts, name)
 	store := &LocalFileStore{BaseDir: backupDir}
-
-	dbName := extractDBNameFromMySQLDSN(dsn)
 
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -31,70 +23,30 @@ func ArchiveMySQL(ctx context.Context, dsn string, tables []string, name string,
 	defer db.Close()
 
 	var manifestTables []map[string]interface{}
-
 	for _, table := range tables {
-		files, err := archiveTable(ctx, db, store, table, opts.Where, "", opts)
+		files, partCol, err := archiveTable(ctx, db, store, table, opts.Where, opts)
 		if err != nil {
 			return fmt.Errorf("[archive-mysql] failed to archive table %s: %w", table, err)
 		}
-
-		var tableSize int64
-		for _, f := range files {
-			switch v := f["size_bytes"].(type) {
-			case int64:
-				tableSize += v
-			case int:
-				tableSize += int64(v)
-			case float64:
-				tableSize += int64(v)
-			}
-		}
-
-		manifestTables = append(manifestTables, map[string]interface{}{
-			"name":       table,
-			"files":      files,
-			"size_bytes": tableSize,
-		})
+		manifestTables = append(manifestTables, tableManifest(table, partCol, files))
 	}
 
-	var totalSize int64
-	for _, t := range manifestTables {
-		switch v := t["size_bytes"].(type) {
-		case int64:
-			totalSize += v
-		case int:
-			totalSize += int64(v)
-		case float64:
-			totalSize += int64(v)
-		}
-	}
-
-	manifest := map[string]interface{}{
-		"name":       name,
-		"db_type":    "mysql",
-		"db_name":    dbName,
-		"created_at": time.Now().UTC().Format(time.RFC3339),
-		"tables":     manifestTables,
-		"size_bytes": totalSize,
-		"local":      true,
-	}
-
-	if err := WriteLocalManifest(backupDir, manifest); err != nil {
+	total, err := writeBackupManifest(backupDir, name, "mysql", extractDBNameFromMySQLDSN(dsn), manifestTables)
+	if err != nil {
 		return fmt.Errorf("[archive-mysql] failed to write local manifest: %w", err)
 	}
-
-	fmt.Printf("[archive-mysql] Backup complete: %s (%d bytes)\n", backupDir, totalSize)
+	fmt.Printf("[archive-mysql] Backup complete: %s (%d bytes)\n", backupDir, total)
 	return nil
 }
 
 // archiveTable handles chunking, processing, and storing for a single table.
-func archiveTable(ctx context.Context, db *sql.DB, store FileStore, table, where, partitionColumnFlag string, opts ArchiveOptions) ([]map[string]interface{}, error) {
+func archiveTable(ctx context.Context, db *sql.DB, store FileStore, table, where string, opts ArchiveOptions) ([]map[string]interface{}, string, error) {
 	progress := &ProgressTracker{Table: table}
-	partitionColumnUsed := mysqlPartitionColumn(db, table, partitionColumnFlag)
+	partitionColumnUsed := mysqlPartitionColumn(db, table)
 
 	hasID, idColumn, hasTime, timeColumn, err := DetectChunkingColumn(db, table)
 	if err != nil {
-		return nil, fmt.Errorf("[archive-mysql] failed to detect chunk column: %w", err)
+		return nil, "", fmt.Errorf("[archive-mysql] failed to detect chunk column: %w", err)
 	}
 
 	var n int
@@ -111,7 +63,7 @@ func archiveTable(ctx context.Context, db *sql.DB, store FileStore, table, where
 		n, query, err = mysqlOffsetChunks(db, table, where, opts.ChunkSize, progress)
 	}
 	if err != nil {
-		return nil, err
+		return nil, partitionColumnUsed, err
 	}
 
 	var uploadedKeysMu sync.Mutex
@@ -127,22 +79,16 @@ func archiveTable(ctx context.Context, db *sql.DB, store FileStore, table, where
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, partitionColumnUsed, err
 	}
 	fmt.Printf("[summary] Table %s: %d rows archived in %d chunks\n", table, progress.DoneRows, progress.DoneChunks)
-	return uploadedKeys, nil
+	return uploadedKeys, partitionColumnUsed, nil
 }
 
-// mysqlPartitionColumn validates the requested partition column against the
-// table, or infers one from the first datetime-looking value of the first row.
-func mysqlPartitionColumn(db *sql.DB, table, requested string) string {
+// mysqlPartitionColumn infers the partition column from the first
+// datetime-looking value of the table's first row.
+func mysqlPartitionColumn(db *sql.DB, table string) string {
 	columns, firstRow := mysqlSampleRow(db, table)
-	if requested != "" {
-		if containsString(columns, requested) {
-			return requested
-		}
-		fmt.Printf("[WARNING] Provided partition column '%s' not found in table. Will attempt to infer.\n", requested)
-	}
 	if col := firstTimeColumn(columns, firstRow); col != "" {
 		fmt.Printf("[INFO] Inferred partition column '%s' from first row.\n", col)
 		return col

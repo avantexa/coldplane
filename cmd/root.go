@@ -123,7 +123,7 @@ var backupCreateCmd = &cobra.Command{
 			return archive.ArchiveMySQL(ctx, dbURL, tbls, backupName, opts)
 		case "postgres":
 			fmt.Printf("[postgres] Archiving tables: %s\n", strings.Join(tbls, ", "))
-			return archive.ArchivePostgres(ctx, dbURL, tbls, backupName, nil, opts)
+			return archive.ArchivePostgres(ctx, dbURL, tbls, backupName, opts)
 		default:
 			return fmt.Errorf("%s: expected postgres://, pg://, or mysql:// prefix", term.ColorError("unsupported database URL format"))
 		}
