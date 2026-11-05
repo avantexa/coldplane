@@ -21,16 +21,6 @@ func TestParseDuration_ErrorsReturnZero(t *testing.T) {
 	}
 }
 
-func TestFormatDuration_SingleUnits(t *testing.T) {
-	day := 24 * time.Hour
-	cases := map[time.Duration]string{day: "1d", 30 * day: "1m", 365 * day: "1y", 0: "0d", 31 * day: "1m1d"}
-	for d, want := range cases {
-		if got := formatDuration(d); got != want {
-			t.Errorf("formatDuration(%v) = %q, want %q", d, got, want)
-		}
-	}
-}
-
 func TestParseDuration_OverflowingNumber(t *testing.T) {
 	if d, err := ParseDuration("99999999999999999999d"); err == nil || d != 0 {
 		t.Errorf("got %v, %v", d, err)

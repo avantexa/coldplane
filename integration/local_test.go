@@ -92,9 +92,8 @@ func TestLocalPostgresFlow(t *testing.T) {
 	})
 
 	t.Run("03_local_backup_manifest", func(t *testing.T) {
-		dir := archive.ResolveLocalBackupDir(backupName)
-		// The backup was created with a custom output dir, so resolve manually
-		dir = backupDir + "/" + backupName
+		// The backup was created with a custom output dir, so resolve manually.
+		dir := backupDir + "/" + backupName
 		manifest, err := archive.ReadLocalManifest(dir)
 		if err != nil {
 			t.Fatalf("ReadLocalManifest: %v", err)

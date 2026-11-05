@@ -459,27 +459,3 @@ func ParseDuration(s string) (time.Duration, error) {
 	}
 	return total, nil
 }
-
-// formatDuration converts a duration back to a human-friendly string.
-func formatDuration(d time.Duration) string {
-	days := int(d.Hours() / 24)
-	years := days / 365
-	days %= 365
-	months := days / 30
-	days %= 30
-
-	var parts []string
-	if years > 0 {
-		parts = append(parts, fmt.Sprintf("%dy", years))
-	}
-	if months > 0 {
-		parts = append(parts, fmt.Sprintf("%dm", months))
-	}
-	if days > 0 {
-		parts = append(parts, fmt.Sprintf("%dd", days))
-	}
-	if len(parts) == 0 {
-		return "0d"
-	}
-	return strings.Join(parts, "")
-}

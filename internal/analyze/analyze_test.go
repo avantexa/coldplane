@@ -43,31 +43,6 @@ func TestParseDuration(t *testing.T) {
 
 // --- formatDuration ---
 
-func TestFormatDuration(t *testing.T) {
-	tests := []struct {
-		name  string
-		input time.Duration
-		want  string
-	}{
-		// 18*30=540 days → 1y (365) + 5m (150) + 25d
-		{"18 months as days", 18 * 30 * 24 * time.Hour, "1y5m25d"},
-		{"1 year", 365 * 24 * time.Hour, "1y"},
-		{"1 year 6 months", (365 + 6*30) * 24 * time.Hour, "1y6m"},
-		{"90 days", 90 * 24 * time.Hour, "3m"},
-		{"zero", 0, "0d"},
-		{"7 days", 7 * 24 * time.Hour, "7d"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := formatDuration(tt.input)
-			if got != tt.want {
-				t.Errorf("formatDuration(%v) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
-	}
-}
-
 // --- quotePGIdentifier ---
 
 func TestQuotePGIdentifier(t *testing.T) {

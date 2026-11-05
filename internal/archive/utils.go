@@ -6,8 +6,6 @@ import (
 	"net/url"
 	"os"
 	"reflect"
-	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -104,14 +102,6 @@ func NormalizeMySQLDSN(input string) string {
 	return dsn
 }
 
-// NormalizeWhereClauseForMySQL transforms PostgreSQL-style INTERVAL clause
-// into a MySQL-compatible one.
-func NormalizeWhereClauseForMySQL(where string) string {
-	// Convert: INTERVAL '3 months' → INTERVAL 3 MONTH
-	re := regexp.MustCompile(`INTERVAL\s+'(\d+)\s+(\w+)'`)
-	return re.ReplaceAllString(where, `INTERVAL $1 $2`)
-}
-
 func inferParquetSchema(fieldNames []string, sampleRow []interface{}) string {
 	tags := []string{}
 
@@ -195,21 +185,4 @@ func toParquetSafeValue(val interface{}) interface{} {
 		}
 		return string(b)
 	}
-}
-
-func detectDecimalPrecision(s string) (scale int, precision int, ok bool) {
-	if s == "" {
-		return 0, 0, false
-	}
-	if _, err := strconv.ParseFloat(s, 64); err != nil {
-		return 0, 0, false
-	}
-
-	parts := strings.SplitN(s, ".", 2)
-	intDigits := len(parts[0])
-	fracDigits := 0
-	if len(parts) > 1 {
-		fracDigits = len(strings.TrimRight(parts[1], "0")) // ignore trailing zeros
-	}
-	return fracDigits, intDigits + fracDigits, true
 }

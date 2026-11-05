@@ -89,14 +89,6 @@ func TestEpochMillis(t *testing.T) {
 	}
 }
 
-func TestDetectDecimalPrecision_NotADecimal(t *testing.T) {
-	for _, s := range []string{"abc", "", "12a"} {
-		if p, sc, ok := detectDecimalPrecision(s); ok || p != 0 || sc != 0 {
-			t.Errorf("%q: %d %d %v", s, p, sc, ok)
-		}
-	}
-}
-
 func TestExtractDBNameFromMySQLDSN(t *testing.T) {
 	cases := map[string]string{
 		"u:p@tcp(h:3306)/shop?parseTime=true": "shop",

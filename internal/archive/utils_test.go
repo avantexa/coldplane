@@ -78,33 +78,6 @@ func TestNormalizeMySQLDSN(t *testing.T) {
 	}
 }
 
-func TestNormalizeWhereClauseForMySQL(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{
-			input:    "created_at > NOW() - INTERVAL '3 months'",
-			expected: "created_at > NOW() - INTERVAL 3 months",
-		},
-		{
-			input:    "created_at > NOW() - INTERVAL '1 year'",
-			expected: "created_at > NOW() - INTERVAL 1 year",
-		},
-		{
-			// No INTERVAL clause — passes through unchanged
-			input:    "user_id = 'abc'",
-			expected: "user_id = 'abc'",
-		},
-	}
-	for _, tt := range tests {
-		got := NormalizeWhereClauseForMySQL(tt.input)
-		if got != tt.expected {
-			t.Errorf("NormalizeWhereClauseForMySQL(%q) = %q, want %q", tt.input, got, tt.expected)
-		}
-	}
-}
-
 func TestExtractDBName(t *testing.T) {
 	tests := []struct {
 		input    string
@@ -118,39 +91,6 @@ func TestExtractDBName(t *testing.T) {
 		got := ExtractDBName(tt.input)
 		if got != tt.expected {
 			t.Errorf("ExtractDBName(%q) = %q, want %q", tt.input, got, tt.expected)
-		}
-	}
-}
-
-func TestDetectDecimalPrecision(t *testing.T) {
-	tests := []struct {
-		input     string
-		wantScale int
-		wantPrec  int
-		wantOK    bool
-	}{
-		{"", 0, 0, false},
-		{"notanumber", 0, 0, false},
-		{"123", 0, 3, true},
-		{"123.45", 2, 5, true},
-		// intDigits=1 ("0"), fracDigits=1 (TrimRight("100","0")="1") → prec=2
-		{"0.100", 1, 2, true},
-		{"-5.5", 1, 3, true},
-	}
-	for _, tt := range tests {
-		scale, prec, ok := detectDecimalPrecision(tt.input)
-		if ok != tt.wantOK {
-			t.Errorf("detectDecimalPrecision(%q) ok=%v, want %v", tt.input, ok, tt.wantOK)
-			continue
-		}
-		if !ok {
-			continue
-		}
-		if scale != tt.wantScale {
-			t.Errorf("detectDecimalPrecision(%q) scale=%d, want %d", tt.input, scale, tt.wantScale)
-		}
-		if prec != tt.wantPrec {
-			t.Errorf("detectDecimalPrecision(%q) prec=%d, want %d", tt.input, prec, tt.wantPrec)
 		}
 	}
 }
