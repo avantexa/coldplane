@@ -15,9 +15,9 @@ import (
 	_ "github.com/marcboeker/go-duckdb"
 )
 
-// seedChunkingTables creates two tables that force the non-time chunking
-// strategies: inttest_ids has an integer primary key and no timestamps,
-// inttest_plain has neither a key nor a timestamp.
+// seedChunkingTables creates three tables that force each chunking strategy:
+// inttest_ids has an integer primary key and no timestamps, inttest_plain has
+// neither a key nor a timestamp, inttest_events has a timestamp but no key.
 func seedChunkingTables(driver, dsn string) error {
 	db, err := sql.Open(driver, dsn)
 	if err != nil {
@@ -28,8 +28,10 @@ func seedChunkingTables(driver, dsn string) error {
 	stmts := []string{
 		`DROP TABLE IF EXISTS inttest_ids`,
 		`DROP TABLE IF EXISTS inttest_plain`,
+		`DROP TABLE IF EXISTS inttest_events`,
 		`CREATE TABLE inttest_ids (id INT PRIMARY KEY, label VARCHAR(20))`,
 		`CREATE TABLE inttest_plain (label VARCHAR(20), qty INT)`,
+		`CREATE TABLE inttest_events (happened_at TIMESTAMP, note VARCHAR(20))`,
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {
@@ -43,6 +45,12 @@ func seedChunkingTables(driver, dsn string) error {
 	}
 	for i := 1; i <= 7; i++ {
 		if _, err := db.Exec(fmt.Sprintf(`INSERT INTO inttest_plain VALUES ('p%d', %d)`, i, i)); err != nil {
+			return err
+		}
+	}
+	for i := 0; i < 12; i++ {
+		ts := time.Date(2023, 1, 15, 12, 0, 0, 0, time.UTC).AddDate(0, i, 0).Format("2006-01-02 15:04:05")
+		if _, err := db.Exec(fmt.Sprintf(`INSERT INTO inttest_events VALUES ('%s', 'e%d')`, ts, i)); err != nil {
 			return err
 		}
 	}
@@ -85,6 +93,9 @@ func testChunkingStrategies(t *testing.T, run func(ctx context.Context, name str
 	if got := parquetRowCount(t, filepath.Join(backupDir, "chunking"), "inttest_plain"); got != 7 {
 		t.Errorf("inttest_plain: %d rows archived, want 7", got)
 	}
+	if got := parquetRowCount(t, filepath.Join(backupDir, "chunking"), "inttest_events"); got != 12 {
+		t.Errorf("inttest_events: %d rows archived, want 12", got)
+	}
 
 	manifest, err := archive.ReadLocalManifest(filepath.Join(backupDir, "chunking"))
 	if err != nil {
@@ -102,8 +113,15 @@ func testChunkingStrategies(t *testing.T, run func(ctx context.Context, name str
 				t.Errorf("inttest_ids: %d files, want 8 (PK chunking)", n)
 			}
 		}
-		if m["partition_column"] != nil {
-			t.Errorf("%v: expected no partition column, got %v", m["name"], m["partition_column"])
+		switch m["name"] {
+		case "inttest_events":
+			if m["partition_column"] != "happened_at" {
+				t.Errorf("inttest_events: partition_column = %v, want happened_at", m["partition_column"])
+			}
+		default:
+			if m["partition_column"] != nil {
+				t.Errorf("%v: expected no partition column, got %v", m["name"], m["partition_column"])
+			}
 		}
 		if m["size_bytes"].(float64) <= 0 {
 			t.Errorf("%v: size_bytes should be positive", m["name"])
@@ -120,7 +138,7 @@ func TestLocalChunkingStrategies_Postgres(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	testChunkingStrategies(t, func(ctx context.Context, name string, opts archive.ArchiveOptions) error {
-		return archive.ArchivePostgres(ctx, pgDSN, []string{"inttest_ids", "inttest_plain"}, name, opts)
+		return archive.ArchivePostgres(ctx, pgDSN, []string{"inttest_ids", "inttest_plain", "inttest_events"}, name, opts)
 	}, "postgres")
 }
 
@@ -133,6 +151,6 @@ func TestLocalChunkingStrategies_MySQL(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	testChunkingStrategies(t, func(ctx context.Context, name string, opts archive.ArchiveOptions) error {
-		return archive.ArchiveMySQL(ctx, mysqlGoDSN, []string{"inttest_ids", "inttest_plain"}, name, opts)
+		return archive.ArchiveMySQL(ctx, mysqlGoDSN, []string{"inttest_ids", "inttest_plain", "inttest_events"}, name, opts)
 	}, "mysql")
 }
