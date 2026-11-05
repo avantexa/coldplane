@@ -95,6 +95,13 @@ func testChunkingStrategies(t *testing.T, run func(ctx context.Context, name str
 	}
 	for _, tb := range manifest["tables"].([]interface{}) {
 		m := tb.(map[string]interface{})
+		// ids 3..75 in PK chunks of 10 -> 8 ranges, each with rows -> 8 files.
+		// OFFSET/LIMIT would produce only 3, so this pins the strategy.
+		if m["name"] == "inttest_ids" {
+			if n := len(m["files"].([]interface{})); n != 8 {
+				t.Errorf("inttest_ids: %d files, want 8 (PK chunking)", n)
+			}
+		}
 		if m["partition_column"] != nil {
 			t.Errorf("%v: expected no partition column, got %v", m["name"], m["partition_column"])
 		}

@@ -120,26 +120,16 @@ func mysqlSampleRow(db *sql.DB, table string) ([]string, []interface{}) {
 	return columns, vals
 }
 
-// detectMySQLDatetimeColumn returns the first DATETIME/TIMESTAMP column of the
-// table by schema, for partitioning when the first row offered no hint.
+// detectMySQLDatetimeColumn picks a DATETIME/TIMESTAMP column by schema for
+// partitioning when the first row offered no hint.
 func detectMySQLDatetimeColumn(db *sql.DB, table string) string {
-	rows, err := db.Query(fmt.Sprintf("SHOW COLUMNS FROM %s", quoteMySQLIdentifier(table)))
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var field, colType, null, key, def, extra sql.NullString
-			if err := rows.Scan(&field, &colType, &null, &key, &def, &extra); err != nil {
-				continue
-			}
-			t := strings.ToLower(colType.String)
-			if strings.Contains(t, "datetime") || strings.Contains(t, "timestamp") {
-				fmt.Printf("[WARN] No --partition-column provided. Detected DATETIME column '%s' for partitioning.\n", field.String)
-				return field.String
-			}
-		}
+	col, _ := mysqlFirstDatetimeColumn(db, table)
+	if col == "" {
+		fmt.Printf("[WARN] No DATETIME column detected. Partitioning may default to 'unknown'.\n")
+		return ""
 	}
-	fmt.Printf("[WARN] No --partition-column or DATETIME column detected. Partitioning may default to 'unknown'.\n")
-	return ""
+	fmt.Printf("[WARN] Detected DATETIME column '%s' for partitioning.\n", col)
+	return col
 }
 
 // mysqlReportNoRows explains why a chunk plan came out empty.
@@ -277,49 +267,64 @@ func processMySQLChunkGeneric(ctx context.Context, db *sql.DB, query, table stri
 	return entries, nil
 }
 
-// DetectChunkingColumn inspects the table for the best chunking column: numeric PK, then DATETIME, else fallback to offset/limit.
+// DetectChunkingColumn picks the best chunking column: a numeric primary
+// key first, then the first DATETIME/TIMESTAMP column, else none (OFFSET/LIMIT).
 func DetectChunkingColumn(db *sql.DB, table string) (hasID bool, idColumn string, hasTime bool, timeColumn string, err error) {
-	// 1. Try for a numeric PK
-	query := fmt.Sprintf("SHOW KEYS FROM %s WHERE Key_name = 'PRIMARY'", quoteMySQLIdentifier(table))
-	rows, err := db.Query(query)
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var (
-				tableName, nonUnique, keyName, seqInIndex, columnName, collation, cardinality, subPart, packed, null, indexType, comment, indexComment sql.NullString
-			)
-			// We only care about Column_name (5th field)
-			_ = rows.Scan(&tableName, &nonUnique, &keyName, &seqInIndex, &columnName, &collation, &cardinality, &subPart, &packed, &null, &indexType, &comment, &indexComment)
-			// Check column type
-			if columnName.Valid {
-				col := columnName.String
-				var dataType string
-				typeQuery := "SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = ? AND COLUMN_NAME = ?"
-				err2 := db.QueryRow(typeQuery, table, col).Scan(&dataType)
-				if err2 == nil && (dataType == "int" || dataType == "bigint" || dataType == "mediumint" || dataType == "smallint" || dataType == "tinyint") {
-					return true, col, false, "", nil
-				}
-			}
-		}
+	if col := mysqlNumericPrimaryKey(db, table); col != "" {
+		return true, col, false, "", nil
 	}
-	// 2. Try for a datetime/timestamp column
-	colRows, err := db.Query(fmt.Sprintf("SHOW COLUMNS FROM %s", quoteMySQLIdentifier(table)))
+	col, err := mysqlFirstDatetimeColumn(db, table)
 	if err != nil {
 		return false, "", false, "", err
 	}
-	defer colRows.Close()
-	for colRows.Next() {
+	if col != "" {
+		return false, "", true, col, nil
+	}
+	return false, "", false, "", nil
+}
+
+// mysqlNumericPrimaryKey returns the first primary-key column of the table in
+// the current schema when it has an integer type, else "".
+func mysqlNumericPrimaryKey(db *sql.DB, table string) string {
+	const q = `SELECT c.COLUMN_NAME, c.DATA_TYPE
+		FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE k
+		JOIN INFORMATION_SCHEMA.COLUMNS c
+		  ON c.TABLE_SCHEMA = k.TABLE_SCHEMA AND c.TABLE_NAME = k.TABLE_NAME AND c.COLUMN_NAME = k.COLUMN_NAME
+		WHERE k.TABLE_SCHEMA = DATABASE() AND k.TABLE_NAME = ? AND k.CONSTRAINT_NAME = 'PRIMARY'
+		ORDER BY k.ORDINAL_POSITION LIMIT 1`
+	var col, dataType string
+	if err := db.QueryRow(q, table).Scan(&col, &dataType); err != nil || !isMySQLIntegerType(dataType) {
+		return ""
+	}
+	return col
+}
+
+func isMySQLIntegerType(dataType string) bool {
+	switch strings.ToLower(dataType) {
+	case "int", "bigint", "mediumint", "smallint", "tinyint":
+		return true
+	}
+	return false
+}
+
+// mysqlFirstDatetimeColumn returns the first DATETIME/TIMESTAMP column of the table, or "".
+func mysqlFirstDatetimeColumn(db *sql.DB, table string) (string, error) {
+	rows, err := db.Query(fmt.Sprintf("SHOW COLUMNS FROM %s", quoteMySQLIdentifier(table)))
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	for rows.Next() {
 		var field, typ, null, key, def, extra sql.NullString
-		if err := colRows.Scan(&field, &typ, &null, &key, &def, &extra); err != nil {
+		if err := rows.Scan(&field, &typ, &null, &key, &def, &extra); err != nil {
 			continue
 		}
 		ft := strings.ToLower(typ.String)
 		if field.Valid && (strings.Contains(ft, "datetime") || strings.Contains(ft, "timestamp")) {
-			return false, "", true, field.String, nil
+			return field.String, nil
 		}
 	}
-	// 3. Fallback: no id, no datetime
-	return false, "", false, "", nil
+	return "", rows.Err()
 }
 
 // Helper to extract db name from MySQL DSN
