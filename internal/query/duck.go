@@ -6,6 +6,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -27,109 +28,7 @@ type QueryOptions struct {
 	Output   string // Output format: "table" (default), "json", or "csv"
 }
 
-// printQueryResults prints the query output in table, csv, or json format.
-func printQueryResults(results []map[string]interface{}, format string) error {
-	if len(results) == 0 {
-		fmt.Println("No results found.")
-		return nil
-	}
-
-	// Determine columns (use the first row); sort for consistent ordering across runs
-	cols := make([]string, 0, len(results[0]))
-	for k := range results[0] {
-		cols = append(cols, k)
-	}
-	sort.Strings(cols)
-
-	out := os.Stdout
-
-	switch strings.ToLower(format) {
-	case "json":
-		enc := json.NewEncoder(out)
-		for _, row := range results {
-			if err := enc.Encode(row); err != nil {
-				return fmt.Errorf("json encode error: %w", err)
-			}
-		}
-		return nil
-
-	case "csv":
-		w := csv.NewWriter(out)
-		if err := w.Write(cols); err != nil {
-			return fmt.Errorf("csv header error: %w", err)
-		}
-		for _, row := range results {
-			record := make([]string, len(cols))
-			for i, col := range cols {
-				record[i] = fmt.Sprintf("%v", row[col])
-			}
-			if err := w.Write(record); err != nil {
-				return fmt.Errorf("csv write error: %w", err)
-			}
-		}
-		w.Flush()
-		if err := w.Error(); err != nil {
-			return fmt.Errorf("csv flush error: %w", err)
-		}
-		return nil
-
-	default: // "table"
-		widths := make([]int, len(cols))
-		for i, col := range cols {
-			widths[i] = len(col)
-		}
-
-		// Precompute all rows as strings
-		var allRows [][]string
-		for _, row := range results {
-			r := make([]string, len(cols))
-			for i, col := range cols {
-				val := row[col]
-				var s string
-				switch v := val.(type) {
-				case nil:
-					s = ""
-				case float64:
-					if v == math.Trunc(v) && !math.IsInf(v, 0) && !math.IsNaN(v) {
-						s = strconv.FormatInt(int64(v), 10)
-					} else {
-						s = strconv.FormatFloat(v, 'f', -1, 64)
-					}
-				case time.Time:
-					s = v.Format("2006-01-02 15:04:05")
-				default:
-					s = fmt.Sprintf("%v", v)
-				}
-				r[i] = s
-				if len(s) > widths[i] {
-					widths[i] = len(s)
-				}
-			}
-			allRows = append(allRows, r)
-		}
-
-		// Print header
-		for i, col := range cols {
-			fmt.Fprintf(out, "%-*s ", widths[i], col)
-		}
-		fmt.Fprintln(out)
-		for i := range cols {
-			fmt.Fprintf(out, "%s ", strings.Repeat("-", widths[i]))
-		}
-		fmt.Fprintln(out)
-
-		// Print rows
-		for _, row := range allRows {
-			for i, val := range row {
-				fmt.Fprintf(out, "%-*s ", widths[i], val)
-			}
-			fmt.Fprintln(out)
-		}
-		return nil
-	}
-}
-
-// RunLocal executes a SQL query against local Parquet files using DuckDB.
+// RunLocal executes a SQL query against a backup's Parquet files using DuckDB.
 func RunLocal(ctx context.Context, backupNameOrPath string, opts QueryOptions) error {
 	backupDir := archive.ResolveLocalBackupDir(backupNameOrPath)
 
@@ -138,128 +37,262 @@ func RunLocal(ctx context.Context, backupNameOrPath string, opts QueryOptions) e
 		return fmt.Errorf("local backup %q not found. Run 'coldplane backup list' to see available backups", backupNameOrPath)
 	}
 
-	// Collect Parquet file paths from the manifest, optionally filtered by table
 	parquetFiles, err := collectLocalParquetFiles(backupDir, manifest, opts.Table)
 	if err != nil {
 		return err
 	}
 	if len(parquetFiles) == 0 {
-		if opts.Table != "" {
-			return fmt.Errorf("no parquet files found for table %q in backup %s. Check the table name with 'coldplane backup list'", opts.Table, backupNameOrPath)
-		}
-		return fmt.Errorf("no parquet files found in backup %s", backupNameOrPath)
+		return noFilesError(backupNameOrPath, opts.Table)
 	}
 
-	// Open DuckDB in-memory
-	db, err := sql.Open("duckdb", "")
-	if err != nil {
-		return fmt.Errorf("open duckdb: %w", err)
-	}
-	defer db.Close()
-
-	// Register the parquet files as a view
-	quotedPaths := make([]string, len(parquetFiles))
-	for i, p := range parquetFiles {
-		quotedPaths[i] = fmt.Sprintf("'%s'", p)
-	}
-	viewSQL := fmt.Sprintf("CREATE VIEW restore_input AS SELECT * FROM read_parquet([%s])", strings.Join(quotedPaths, ", "))
-	if _, err := db.ExecContext(ctx, viewSQL); err != nil {
-		return fmt.Errorf("create view: %w", err)
-	}
-
-	// Build the query
 	sqlText := strings.TrimSpace(opts.SQL)
 	if sqlText == "" {
 		return fmt.Errorf("--sql is required")
 	}
 
-	// Execute query
+	db, err := openParquetView(ctx, parquetFiles)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	results, err := queryRows(ctx, db, sqlText)
+	if err != nil {
+		return err
+	}
+	return printQueryResults(results, opts.Output)
+}
+
+func noFilesError(backup, table string) error {
+	if table != "" {
+		return fmt.Errorf("no parquet files found for table %q in backup %s. Check the table name with 'coldplane backup list'", table, backup)
+	}
+	return fmt.Errorf("no parquet files found in backup %s", backup)
+}
+
+// openParquetView opens an in-memory DuckDB with the files exposed as the view restore_input.
+func openParquetView(ctx context.Context, files []string) (*sql.DB, error) {
+	db, err := sql.Open("duckdb", "")
+	if err != nil {
+		return nil, fmt.Errorf("open duckdb: %w", err)
+	}
+	quoted := make([]string, len(files))
+	for i, p := range files {
+		quoted[i] = fmt.Sprintf("'%s'", p)
+	}
+	viewSQL := fmt.Sprintf("CREATE VIEW restore_input AS SELECT * FROM read_parquet([%s])", strings.Join(quoted, ", "))
+	if _, err := db.ExecContext(ctx, viewSQL); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create view: %w", err)
+	}
+	return db, nil
+}
+
+// queryRows runs sqlText and returns every row as a column-name map.
+func queryRows(ctx context.Context, db *sql.DB, sqlText string) ([]map[string]interface{}, error) {
 	rows, err := db.QueryContext(ctx, sqlText)
 	if err != nil {
-		return fmt.Errorf("query: %w", err)
+		return nil, fmt.Errorf("query: %w", err)
 	}
 	defer rows.Close()
 
-	// Read results into maps
 	columns, err := rows.Columns()
 	if err != nil {
-		return fmt.Errorf("get columns: %w", err)
+		return nil, fmt.Errorf("get columns: %w", err)
 	}
 
 	var results []map[string]interface{}
 	for rows.Next() {
 		values := make([]interface{}, len(columns))
-		valuePtrs := make([]interface{}, len(columns))
+		ptrs := make([]interface{}, len(columns))
 		for i := range values {
-			valuePtrs[i] = &values[i]
+			ptrs[i] = &values[i]
 		}
-		if err := rows.Scan(valuePtrs...); err != nil {
-			return fmt.Errorf("scan row: %w", err)
+		if err := rows.Scan(ptrs...); err != nil {
+			return nil, fmt.Errorf("scan row: %w", err)
 		}
-		row := make(map[string]interface{})
+		row := make(map[string]interface{}, len(columns))
 		for i, col := range columns {
 			row[col] = values[i]
 		}
 		results = append(results, row)
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("row iteration: %w", err)
+		return nil, fmt.Errorf("row iteration: %w", err)
 	}
-
-	return printQueryResults(results, opts.Output)
+	return results, nil
 }
 
-// collectLocalParquetFiles walks the backup directory and collects .parquet file paths.
-// If tableName is specified, only files under that table's subdirectory are included.
+// collectLocalParquetFiles returns the backup's Parquet files, optionally
+// limited to one table: the manifest's files when they exist on disk, else
+// whatever .parquet files a directory walk finds.
 func collectLocalParquetFiles(backupDir string, manifest map[string]interface{}, tableName string) ([]string, error) {
-	var files []string
-
 	tables, ok := manifest["tables"].([]interface{})
 	if !ok {
 		return nil, fmt.Errorf("manifest missing tables array")
 	}
-
-	for _, t := range tables {
-		tMap, ok := t.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		name, _ := tMap["name"].(string)
-		if tableName != "" && name != tableName {
-			continue
-		}
-
-		// Try to get files from the manifest first
-		if fileList, ok := tMap["files"].([]interface{}); ok {
-			for _, f := range fileList {
-				if fMap, ok := f.(map[string]interface{}); ok {
-					if key, ok := fMap["key"].(string); ok {
-						fullPath := filepath.Join(backupDir, filepath.FromSlash(key))
-						if _, err := os.Stat(fullPath); err == nil {
-							files = append(files, fullPath)
-						}
-					}
-				}
-			}
-		}
-	}
-
-	// Fallback: if no files found via manifest, walk the directory
+	files := manifestParquetFiles(backupDir, tables, tableName)
 	if len(files) == 0 {
 		searchDir := backupDir
 		if tableName != "" {
 			searchDir = filepath.Join(backupDir, tableName)
 		}
-		_ = filepath.Walk(searchDir, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				return nil
-			}
-			if !info.IsDir() && strings.HasSuffix(path, ".parquet") {
-				files = append(files, path)
-			}
-			return nil
-		})
+		files = walkParquetFiles(searchDir)
 	}
-
 	return files, nil
+}
+
+// manifestParquetFiles returns the manifest file keys that exist on disk.
+func manifestParquetFiles(backupDir string, tables []interface{}, tableName string) []string {
+	var files []string
+	for _, t := range tables {
+		tMap, ok := t.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if name, _ := tMap["name"].(string); tableName != "" && name != tableName {
+			continue
+		}
+		fileList, _ := tMap["files"].([]interface{})
+		for _, f := range fileList {
+			fMap, _ := f.(map[string]interface{})
+			key, ok := fMap["key"].(string)
+			if !ok {
+				continue
+			}
+			full := filepath.Join(backupDir, filepath.FromSlash(key))
+			if _, err := os.Stat(full); err == nil {
+				files = append(files, full)
+			}
+		}
+	}
+	return files
+}
+
+// walkParquetFiles returns every .parquet file under dir.
+func walkParquetFiles(dir string) []string {
+	var files []string
+	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() && strings.HasSuffix(path, ".parquet") {
+			files = append(files, path)
+		}
+		return nil
+	})
+	return files
+}
+
+// printQueryResults prints the query output to stdout in table, csv, or json format.
+func printQueryResults(results []map[string]interface{}, format string) error {
+	return writeQueryResults(os.Stdout, results, format)
+}
+
+// writeQueryResults renders results to w in table, csv, or json format.
+func writeQueryResults(w io.Writer, results []map[string]interface{}, format string) error {
+	if len(results) == 0 {
+		fmt.Fprintln(w, "No results found.")
+		return nil
+	}
+	cols := sortedColumns(results[0])
+	switch strings.ToLower(format) {
+	case "json":
+		return writeJSON(w, results)
+	case "csv":
+		return writeCSV(w, cols, results)
+	default:
+		return writeTable(w, cols, results)
+	}
+}
+
+// sortedColumns returns the row's column names in a stable order.
+func sortedColumns(row map[string]interface{}) []string {
+	cols := make([]string, 0, len(row))
+	for k := range row {
+		cols = append(cols, k)
+	}
+	sort.Strings(cols)
+	return cols
+}
+
+func writeJSON(w io.Writer, results []map[string]interface{}) error {
+	enc := json.NewEncoder(w)
+	for _, row := range results {
+		if err := enc.Encode(row); err != nil {
+			return fmt.Errorf("json encode error: %w", err)
+		}
+	}
+	return nil
+}
+
+func writeCSV(w io.Writer, cols []string, results []map[string]interface{}) error {
+	cw := csv.NewWriter(w)
+	if err := cw.Write(cols); err != nil {
+		return fmt.Errorf("csv header error: %w", err)
+	}
+	for _, row := range results {
+		record := make([]string, len(cols))
+		for i, col := range cols {
+			record[i] = fmt.Sprintf("%v", row[col])
+		}
+		if err := cw.Write(record); err != nil {
+			return fmt.Errorf("csv write error: %w", err)
+		}
+	}
+	cw.Flush()
+	if err := cw.Error(); err != nil {
+		return fmt.Errorf("csv flush error: %w", err)
+	}
+	return nil
+}
+
+func writeTable(w io.Writer, cols []string, results []map[string]interface{}) error {
+	widths := make([]int, len(cols))
+	for i, col := range cols {
+		widths[i] = len(col)
+	}
+	rows := make([][]string, 0, len(results))
+	for _, row := range results {
+		r := make([]string, len(cols))
+		for i, col := range cols {
+			r[i] = formatCell(row[col])
+			if len(r[i]) > widths[i] {
+				widths[i] = len(r[i])
+			}
+		}
+		rows = append(rows, r)
+	}
+	writePadded(w, cols, widths)
+	seps := make([]string, len(cols))
+	for i := range cols {
+		seps[i] = strings.Repeat("-", widths[i])
+	}
+	writePadded(w, seps, widths)
+	for _, r := range rows {
+		writePadded(w, r, widths)
+	}
+	return nil
+}
+
+func writePadded(w io.Writer, cells []string, widths []int) {
+	for i, c := range cells {
+		fmt.Fprintf(w, "%-*s ", widths[i], c)
+	}
+	fmt.Fprintln(w)
+}
+
+// formatCell renders one value for the table output: whole floats without a
+// decimal point, times as YYYY-MM-DD HH:MM:SS, nil as empty.
+func formatCell(v interface{}) string {
+	switch x := v.(type) {
+	case nil:
+		return ""
+	case float64:
+		if x == math.Trunc(x) && !math.IsInf(x, 0) && !math.IsNaN(x) {
+			return strconv.FormatInt(int64(x), 10)
+		}
+		return strconv.FormatFloat(x, 'f', -1, 64)
+	case time.Time:
+		return x.Format("2006-01-02 15:04:05")
+	default:
+		return fmt.Sprintf("%v", x)
+	}
 }
