@@ -4,9 +4,9 @@ package integration
 
 import (
 	"context"
-	"os"
 	"database/sql"
 	"fmt"
+	"os"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
