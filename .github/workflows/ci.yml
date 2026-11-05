@@ -27,3 +27,21 @@ jobs:
 
       - name: Unit tests
         run: go test ./...
+
+  # Runs only on the homelab Forgejo instance, after CI passes on main.
+  # Pushes the verified commit to the public GitHub repo.
+  publish-to-github:
+    needs: lint-and-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.server_url == 'https://git.lab.home.arpa'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push main to GitHub
+        env:
+          GH_PUSH_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
+        run: |
+          test -n "$GH_PUSH_TOKEN" || { echo "GH_PUSH_TOKEN secret is not set"; exit 1; }
+          git push "https://x-access-token:${GH_PUSH_TOKEN}@github.com/avantexa/coldplane.git" HEAD:main
