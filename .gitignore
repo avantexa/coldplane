@@ -1,0 +1,7 @@
+# Build output
+dist/
+coldplane
+
+# Metrics tools (crapper, dryer, mutator)
+.metrics/
+target/

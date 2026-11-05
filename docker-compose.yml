@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: test-mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: testdb
+      MYSQL_USER: testuser
+      MYSQL_PASSWORD: testpass
+    command: --local-infile=1
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./my.cnf:/etc/mysql/conf.d/my.cnf
+      - ./seed_mysql.sql:/docker-entrypoint-initdb.d/seed.sql
+
+  postgres:
+    image: postgres:15
+    restart: always
+    environment:
+      POSTGRES_USER: testuser
+      POSTGRES_PASSWORD: testpass
+      POSTGRES_DB: testdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./seed_postgres.sql:/docker-entrypoint-initdb.d/seed.sql
+
+volumes:
+  pgdata:

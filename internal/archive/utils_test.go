@@ -1,0 +1,314 @@
+package archive
+
+import (
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestQuoteMySQLIdentifier(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"tablename", "`tablename`"},
+		{"table`name", "`table``name`"},
+		{"", "``"},
+	}
+	for _, tt := range tests {
+		got := quoteMySQLIdentifier(tt.input)
+		if got != tt.expected {
+			t.Errorf("quoteMySQLIdentifier(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestQuotePGIdentifier(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"tablename", `"tablename"`},
+		{`table"name`, `"table""name"`},
+		{"", `""`},
+	}
+	for _, tt := range tests {
+		got := quotePGIdentifier(tt.input)
+		if got != tt.expected {
+			t.Errorf("quotePGIdentifier(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestNormalizeMySQLDSN(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "non-mysql URI passes through unchanged",
+			input:    "user:pass@tcp(host:3306)/db",
+			expected: "user:pass@tcp(host:3306)/db",
+		},
+		{
+			name:     "mysql:// URI with password",
+			input:    "mysql://user:pass@host:3306/mydb",
+			expected: "user:pass@tcp(host:3306)/mydb",
+		},
+		{
+			name:     "mysql:// URI without password",
+			input:    "mysql://user@host:3306/mydb",
+			expected: "user@tcp(host:3306)/mydb",
+		},
+		{
+			name:     "mysql:// URI with query params",
+			input:    "mysql://user:pass@host:3306/mydb?charset=utf8",
+			expected: "user:pass@tcp(host:3306)/mydb?charset=utf8",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := NormalizeMySQLDSN(tt.input)
+			if got != tt.expected {
+				t.Errorf("NormalizeMySQLDSN(%q) = %q, want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestNormalizeWhereClauseForMySQL(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{
+			input:    "created_at > NOW() - INTERVAL '3 months'",
+			expected: "created_at > NOW() - INTERVAL 3 months",
+		},
+		{
+			input:    "created_at > NOW() - INTERVAL '1 year'",
+			expected: "created_at > NOW() - INTERVAL 1 year",
+		},
+		{
+			// No INTERVAL clause — passes through unchanged
+			input:    "user_id = 'abc'",
+			expected: "user_id = 'abc'",
+		},
+	}
+	for _, tt := range tests {
+		got := NormalizeWhereClauseForMySQL(tt.input)
+		if got != tt.expected {
+			t.Errorf("NormalizeWhereClauseForMySQL(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestExtractDBName(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"postgres://user:pass@host:5432/mydb", "mydb"},
+		{"postgres://user:pass@host:5432/mydb?sslmode=require", "mydb"},
+		{"mysql://user:pass@host:3306/orders", "orders"},
+	}
+	for _, tt := range tests {
+		got := ExtractDBName(tt.input)
+		if got != tt.expected {
+			t.Errorf("ExtractDBName(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestDetectDecimalPrecision(t *testing.T) {
+	tests := []struct {
+		input     string
+		wantScale int
+		wantPrec  int
+		wantOK    bool
+	}{
+		{"", 0, 0, false},
+		{"notanumber", 0, 0, false},
+		{"123", 0, 3, true},
+		{"123.45", 2, 5, true},
+		// intDigits=1 ("0"), fracDigits=1 (TrimRight("100","0")="1") → prec=2
+		{"0.100", 1, 2, true},
+		{"-5.5", 1, 3, true},
+	}
+	for _, tt := range tests {
+		scale, prec, ok := detectDecimalPrecision(tt.input)
+		if ok != tt.wantOK {
+			t.Errorf("detectDecimalPrecision(%q) ok=%v, want %v", tt.input, ok, tt.wantOK)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if scale != tt.wantScale {
+			t.Errorf("detectDecimalPrecision(%q) scale=%d, want %d", tt.input, scale, tt.wantScale)
+		}
+		if prec != tt.wantPrec {
+			t.Errorf("detectDecimalPrecision(%q) prec=%d, want %d", tt.input, prec, tt.wantPrec)
+		}
+	}
+}
+
+// --- inferParquetSchema ---
+
+func TestInferParquetSchema(t *testing.T) {
+	t.Run("int column", func(t *testing.T) {
+		schema := inferParquetSchema([]string{"id"}, []interface{}{int64(1)})
+		if !strings.Contains(schema, "type=INT64") {
+			t.Errorf("expected INT64 for int64, got: %s", schema)
+		}
+		if !strings.Contains(schema, "name=id") {
+			t.Errorf("expected name=id, got: %s", schema)
+		}
+	})
+
+	t.Run("float column", func(t *testing.T) {
+		schema := inferParquetSchema([]string{"amount"}, []interface{}{float64(3.14)})
+		if !strings.Contains(schema, "type=DOUBLE") {
+			t.Errorf("expected DOUBLE for float64, got: %s", schema)
+		}
+	})
+
+	t.Run("string column", func(t *testing.T) {
+		schema := inferParquetSchema([]string{"name"}, []interface{}{"alice"})
+		if !strings.Contains(schema, "type=BYTE_ARRAY") {
+			t.Errorf("expected BYTE_ARRAY for string, got: %s", schema)
+		}
+	})
+
+	t.Run("time column", func(t *testing.T) {
+		schema := inferParquetSchema([]string{"created_at"}, []interface{}{time.Now()})
+		if !strings.Contains(schema, "TIMESTAMP_MILLIS") {
+			t.Errorf("expected TIMESTAMP_MILLIS for time.Time, got: %s", schema)
+		}
+	})
+
+	t.Run("bool column", func(t *testing.T) {
+		schema := inferParquetSchema([]string{"active"}, []interface{}{true})
+		// bool falls through to default → BYTE_ARRAY
+		if !strings.Contains(schema, "type=BYTE_ARRAY") {
+			t.Errorf("expected BYTE_ARRAY for bool, got: %s", schema)
+		}
+	})
+
+	t.Run("multiple columns", func(t *testing.T) {
+		schema := inferParquetSchema(
+			[]string{"id", "name", "amount"},
+			[]interface{}{int64(1), "alice", float64(9.99)},
+		)
+		if !strings.Contains(schema, "name=id") {
+			t.Error("missing id field")
+		}
+		if !strings.Contains(schema, "name=name") {
+			t.Error("missing name field")
+		}
+		if !strings.Contains(schema, "name=amount") {
+			t.Error("missing amount field")
+		}
+		if !strings.Contains(schema, `"Tag":"name=root"`) {
+			t.Error("missing root tag")
+		}
+	})
+}
+
+// --- toParquetSafeValue ---
+
+func TestToParquetSafeValue(t *testing.T) {
+	t.Run("nil", func(t *testing.T) {
+		if toParquetSafeValue(nil) != nil {
+			t.Error("expected nil")
+		}
+	})
+
+	t.Run("string passthrough", func(t *testing.T) {
+		got := toParquetSafeValue("hello")
+		if got != "hello" {
+			t.Errorf("got %v, want 'hello'", got)
+		}
+	})
+
+	t.Run("int passthrough", func(t *testing.T) {
+		got := toParquetSafeValue(int(42))
+		if got != int(42) {
+			t.Errorf("got %v, want 42", got)
+		}
+	})
+
+	t.Run("int64 passthrough", func(t *testing.T) {
+		got := toParquetSafeValue(int64(100))
+		if got != int64(100) {
+			t.Errorf("got %v, want 100", got)
+		}
+	})
+
+	t.Run("int8 promoted to int64", func(t *testing.T) {
+		got := toParquetSafeValue(int8(8))
+		if got != int64(8) {
+			t.Errorf("got %v (%T), want int64(8)", got, got)
+		}
+	})
+
+	t.Run("uint32 promoted to int64", func(t *testing.T) {
+		got := toParquetSafeValue(uint32(32))
+		if got != int64(32) {
+			t.Errorf("got %v (%T), want int64(32)", got, got)
+		}
+	})
+
+	t.Run("time.Time to UnixMilli", func(t *testing.T) {
+		ts := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+		got := toParquetSafeValue(ts)
+		want := ts.UTC().UnixMilli()
+		if got != want {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("bool true", func(t *testing.T) {
+		got := toParquetSafeValue(true)
+		if got != "true" {
+			t.Errorf("got %v, want 'true'", got)
+		}
+	})
+
+	t.Run("bool false", func(t *testing.T) {
+		got := toParquetSafeValue(false)
+		if got != "false" {
+			t.Errorf("got %v, want 'false'", got)
+		}
+	})
+
+	t.Run("complex type marshalled to JSON", func(t *testing.T) {
+		got := toParquetSafeValue(map[string]int{"a": 1})
+		s, ok := got.(string)
+		if !ok {
+			t.Fatalf("expected string, got %T", got)
+		}
+		if !strings.Contains(s, `"a":1`) {
+			t.Errorf("expected JSON with a:1, got %s", s)
+		}
+	})
+}
+
+// --- DefaultOptions ---
+
+func TestDefaultOptions(t *testing.T) {
+	opts := DefaultOptions()
+	if opts.ChunkSize != 2_500_000 {
+		t.Errorf("ChunkSize = %d, want 2500000", opts.ChunkSize)
+	}
+	if opts.Workers != 4 {
+		t.Errorf("Workers = %d, want 4", opts.Workers)
+	}
+	if opts.LocalOutputDir != "" {
+		t.Errorf("LocalOutputDir should default to empty, got %q", opts.LocalOutputDir)
+	}
+	if opts.Where != "" {
+		t.Errorf("Where should default to empty, got %q", opts.Where)
+	}
+}

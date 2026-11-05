@@ -1,0 +1,18 @@
+FROM golang:1.24-bookworm
+
+# Linux cross-compilers (bookworm packages are fine for Linux targets)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc-x86-64-linux-gnu g++-x86-64-linux-gnu \
+    gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+    && rm -rf /var/lib/apt/lists/*
+
+# Windows cross-compiler: install mingw-w64 from Debian trixie (GCC 14)
+# to match the toolchain used to build go-duckdb's static libs.
+RUN echo "deb http://deb.debian.org/debian trixie main" > /etc/apt/sources.list.d/trixie.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends -t trixie \
+        gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
+    && rm -rf /var/lib/apt/lists/* /etc/apt/sources.list.d/trixie.list \
+    && ln -sf /usr/x86_64-w64-mingw32/lib/librstrtmgr.a /usr/x86_64-w64-mingw32/lib/libRstrtmgr.a
+
+WORKDIR /build
