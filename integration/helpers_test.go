@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"os"
 	"database/sql"
 	"fmt"
 	"time"
@@ -12,14 +13,22 @@ import (
 	_ "github.com/lib/pq"
 )
 
-// DSNs for the docker-compose databases.
-const (
+// DSNs for the test databases: docker-compose on localhost by default,
+// overridable for CI, where the service containers are reached by name.
+var (
 	// pgDSN is used by both pgx (archive) and lib/pq (seeding).
-	pgDSN = "postgres://testuser:testpass@localhost:5432/testdb?sslmode=disable"
+	pgDSN = envOr("COLDPLANE_TEST_PG_DSN", "postgres://testuser:testpass@localhost:5432/testdb?sslmode=disable")
 
 	// mysqlGoDSN is the Go MySQL driver format used by sql.Open and archive.
-	mysqlGoDSN = "testuser:testpass@tcp(localhost:3306)/testdb?parseTime=true"
+	mysqlGoDSN = envOr("COLDPLANE_TEST_MYSQL_DSN", "testuser:testpass@tcp(localhost:3306)/testdb?parseTime=true")
 )
+
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
 
 // verifyPostgres pings the local PostgreSQL instance.
 func verifyPostgres() error {

@@ -91,7 +91,7 @@ go build -o coldplane      # cgo must be enabled (DuckDB); no extra libraries ne
 ./scripts/test.sh all          # both
 ```
 
-Integration tests are behind the `integration` build tag and skip unless `COLDPLANE_LOCAL_TEST=1`. Start databases with `docker compose up -d`.
+Integration tests are behind the `integration` build tag and skip unless `COLDPLANE_LOCAL_TEST=1`. Start databases with `docker compose up -d`. The DSNs default to localhost and can be overridden with `COLDPLANE_TEST_PG_DSN` / `COLDPLANE_TEST_MYSQL_DSN`; CI runs the same suite against Postgres and MySQL service containers.
 
 ## Notes for AI Assistants
 
