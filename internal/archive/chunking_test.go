@@ -72,9 +72,10 @@ func TestPlanTimeChunks(t *testing.T) {
 		t.Errorf("exact window: got %v", got)
 	}
 
-	// Pinned current behavior: min == max yields no chunks. See TestPlanTimeChunks_SameInstant once fixed.
-	if got := planTimeChunks(t0, t0, 30*day, time.Second); len(got) != 0 {
-		t.Errorf("min==max: got %v, want none", got)
+	// All rows share one timestamp: exactly one chunk that includes that instant.
+	got = planTimeChunks(t0, t0, 30*day, time.Second)
+	if len(got) != 1 || !got[0].Start.Equal(t0) || !got[0].End.Equal(t0.Add(time.Second)) {
+		t.Errorf("min==max: got %v, want one chunk [t0, t0+1s)", got)
 	}
 }
 

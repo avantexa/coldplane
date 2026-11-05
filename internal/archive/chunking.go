@@ -48,7 +48,7 @@ func planTimeChunks(min, max time.Time, window, nudge time.Duration) []timeRange
 		window = defaultTimeWindow
 	}
 	var plan []timeRange
-	for t0 := min; t0.Before(max); {
+	for t0 := min; !t0.After(max); {
 		t1 := t0.Add(window)
 		if !t1.Before(max) {
 			t1 = max.Add(nudge)
