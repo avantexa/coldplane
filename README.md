@@ -79,7 +79,6 @@ coldplane backup create \
 | `--name` | | Backup name (auto-generated from table and timestamp if omitted) |
 | `--chunk-size` | | Rows per chunk (default: 2,500,000) |
 | `--workers` | | Parallel archive workers (default: 4) |
-| `--format` | `-f` | Export format, default: `parquet` |
 
 ### `backup list` — List backups
 

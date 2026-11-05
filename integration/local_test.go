@@ -55,7 +55,7 @@ func TestLocalPostgresFlow(t *testing.T) {
 		opts := archive.DefaultOptions()
 		opts.LocalOutputDir = backupDir
 
-		err := archive.ArchivePostgres(ctx, pgDSN, []string{"inttest_orders"}, "parquet", backupName, nil, opts)
+		err := archive.ArchivePostgres(ctx, pgDSN, []string{"inttest_orders"}, backupName, nil, opts)
 		if err != nil {
 			t.Fatalf("Local backup create failed: %v", err)
 		}
@@ -183,7 +183,7 @@ func TestLocalMySQLFlow(t *testing.T) {
 
 		// Normalize DSN like the CLI does
 		normalizedDSN := archive.NormalizeMySQLDSN(mysqlDSN)
-		err := archive.ArchiveMySQL(ctx, normalizedDSN, []string{"inttest_orders"}, "parquet", backupName, opts)
+		err := archive.ArchiveMySQL(ctx, normalizedDSN, []string{"inttest_orders"}, backupName, opts)
 		if err != nil {
 			t.Fatalf("Local MySQL backup failed: %v", err)
 		}
@@ -268,7 +268,7 @@ func TestLocalPostgresAllTypes(t *testing.T) {
 		opts := archive.DefaultOptions()
 		opts.LocalOutputDir = backupDir
 
-		err := archive.ArchivePostgres(ctx, pgDSN, []string{"inttest_alltypes"}, "parquet", backupName, nil, opts)
+		err := archive.ArchivePostgres(ctx, pgDSN, []string{"inttest_alltypes"}, backupName, nil, opts)
 		if err != nil {
 			t.Fatalf("Local alltypes backup failed: %v", err)
 		}
@@ -331,7 +331,7 @@ func TestLocalMySQLAllTypes(t *testing.T) {
 		opts.LocalOutputDir = backupDir
 
 		normalizedDSN := archive.NormalizeMySQLDSN(mysqlDSN)
-		err := archive.ArchiveMySQL(ctx, normalizedDSN, []string{"inttest_alltypes"}, "parquet", backupName, opts)
+		err := archive.ArchiveMySQL(ctx, normalizedDSN, []string{"inttest_alltypes"}, backupName, opts)
 		if err != nil {
 			t.Fatalf("Local MySQL alltypes backup failed: %v", err)
 		}
@@ -380,7 +380,7 @@ func TestLocalMultiTable(t *testing.T) {
 		opts := archive.DefaultOptions()
 		opts.LocalOutputDir = backupDir
 
-		err := archive.ArchivePostgres(ctx, pgDSN, []string{"inttest_orders", "inttest_alltypes"}, "parquet", backupName, nil, opts)
+		err := archive.ArchivePostgres(ctx, pgDSN, []string{"inttest_orders", "inttest_alltypes"}, backupName, nil, opts)
 		if err != nil {
 			t.Fatalf("Local multi-table backup failed: %v", err)
 		}
@@ -678,7 +678,7 @@ func TestLocalBackupWithWhere_Postgres(t *testing.T) {
 		opts.LocalOutputDir = backupDir
 		opts.Where = "created_at < NOW() - INTERVAL '18 months'"
 
-		err := archive.ArchivePostgres(ctx, pgDSN, []string{"inttest_orders"}, "parquet", backupName, nil, opts)
+		err := archive.ArchivePostgres(ctx, pgDSN, []string{"inttest_orders"}, backupName, nil, opts)
 		if err != nil {
 			t.Fatalf("Local backup with --where failed: %v", err)
 		}
@@ -750,7 +750,7 @@ func TestLocalBackupWithWhere_MySQL(t *testing.T) {
 		opts.Where = "created_at < DATE_SUB(NOW(), INTERVAL 18 MONTH)"
 
 		normalizedDSN := archive.NormalizeMySQLDSN(mysqlDSN)
-		err := archive.ArchiveMySQL(ctx, normalizedDSN, []string{"inttest_orders"}, "parquet", backupName, opts)
+		err := archive.ArchiveMySQL(ctx, normalizedDSN, []string{"inttest_orders"}, backupName, opts)
 		if err != nil {
 			t.Fatalf("Local MySQL backup with --where failed: %v", err)
 		}

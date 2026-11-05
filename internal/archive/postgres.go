@@ -21,7 +21,7 @@ import (
 )
 
 // archivePostgresTable handles chunking, processing, and storing for a single table.
-func archivePostgresTable(ctx context.Context, pool *pgxpool.Pool, store FileStore, s3Root string, existingManifest map[string]int64, table, where, format, partitionColumn string, opts ArchiveOptions) ([]map[string]interface{}, string, error) {
+func archivePostgresTable(ctx context.Context, pool *pgxpool.Pool, store FileStore, table, where, partitionColumn string, opts ArchiveOptions) ([]map[string]interface{}, string, error) {
 	// Progress tracker for this table
 	progress := &ProgressTracker{Table: table}
 
@@ -167,7 +167,7 @@ func archivePostgresTable(ctx context.Context, pool *pgxpool.Pool, store FileSto
 				if where != "" {
 					q = fmt.Sprintf("SELECT * FROM %s WHERE (%s) AND (%s >= $1 AND %s < $2)", quotePGIdentifier(table), where, quotePGIdentifier(timeColumn), quotePGIdentifier(timeColumn))
 				}
-				rowCount, err := processPostgresChunkGeneric(ctx, dbConn.Conn(), q, []interface{}{t0, t1}, table, chunkNum, s3Root, partitionColumnUsed, &uploadedKeysMu, &uploadedKeys, store, existingManifest)
+				rowCount, err := processPostgresChunkGeneric(ctx, dbConn.Conn(), q, []interface{}{t0, t1}, table, chunkNum, partitionColumnUsed, &uploadedKeysMu, &uploadedKeys, store)
 				if err != nil {
 					errCh <- fmt.Errorf("[worker %d] %w", chunkNum, err)
 				} else {
@@ -244,7 +244,7 @@ func archivePostgresTable(ctx context.Context, pool *pgxpool.Pool, store FileSto
 				if where != "" {
 					q = fmt.Sprintf("SELECT * FROM %s WHERE (%s) AND (%s >= $1 AND %s < $2)", quotePGIdentifier(table), where, quotePGIdentifier(idColumn), quotePGIdentifier(idColumn))
 				}
-				rowCount, err := processPostgresChunkGeneric(ctx, dbConn.Conn(), q, []interface{}{startID, endID}, table, int(chunkNum), s3Root, partitionColumnUsed, &uploadedKeysMu, &uploadedKeys, store, existingManifest)
+				rowCount, err := processPostgresChunkGeneric(ctx, dbConn.Conn(), q, []interface{}{startID, endID}, table, int(chunkNum), partitionColumnUsed, &uploadedKeysMu, &uploadedKeys, store)
 				if err != nil {
 					errCh <- fmt.Errorf("[worker %d] %w", chunkNum, err)
 				} else {
@@ -306,7 +306,7 @@ func archivePostgresTable(ctx context.Context, pool *pgxpool.Pool, store FileSto
 			if where != "" {
 				q = fmt.Sprintf("SELECT * FROM %s WHERE %s LIMIT $1 OFFSET $2", quotePGIdentifier(table), where)
 			}
-			rowCount, err := processPostgresChunkGeneric(ctx, dbConn.Conn(), q, []interface{}{limit, offset}, table, chunkNum, s3Root, partitionColumnUsed, &uploadedKeysMu, &uploadedKeys, store, existingManifest)
+			rowCount, err := processPostgresChunkGeneric(ctx, dbConn.Conn(), q, []interface{}{limit, offset}, table, chunkNum, partitionColumnUsed, &uploadedKeysMu, &uploadedKeys, store)
 			if err != nil {
 				errCh <- fmt.Errorf("[worker %d] %w", chunkNum, err)
 			} else {
@@ -336,7 +336,7 @@ func archivePostgresTable(ctx context.Context, pool *pgxpool.Pool, store FileSto
 }
 
 // ArchivePostgres archives one or more tables into local Parquet files under a single backup name.
-func ArchivePostgres(ctx context.Context, dbURL string, tables []string, format, name string, partitionColumns map[string]string, opts ArchiveOptions) error {
+func ArchivePostgres(ctx context.Context, dbURL string, tables []string, name string, partitionColumns map[string]string, opts ArchiveOptions) error {
 	fmt.Println("[archive-postgres] Starting archive process")
 
 	baseDir := opts.LocalOutputDir
@@ -355,7 +355,6 @@ func ArchivePostgres(ctx context.Context, dbURL string, tables []string, format,
 	defer pool.Close()
 
 	var manifestTables []map[string]interface{}
-	emptyManifest := map[string]int64{}
 
 	for _, table := range tables {
 		partCol := ""
@@ -365,7 +364,7 @@ func ArchivePostgres(ctx context.Context, dbURL string, tables []string, format,
 			}
 		}
 
-		files, actualPartCol, err := archivePostgresTable(ctx, pool, store, "", emptyManifest, table, opts.Where, format, partCol, opts)
+		files, actualPartCol, err := archivePostgresTable(ctx, pool, store, table, opts.Where, partCol, opts)
 		if err != nil {
 			return fmt.Errorf("[archive-postgres] failed to archive table %s: %w", table, err)
 		}
@@ -420,10 +419,9 @@ func ArchivePostgres(ctx context.Context, dbURL string, tables []string, format,
 
 func processPostgresChunkGeneric(
 	ctx context.Context, conn *pgx.Conn, query string, args []interface{},
-	table string, chunkNum int, s3Root, partitionColumn string,
+	table string, chunkNum int, partitionColumn string,
 	uploadedKeysMu *sync.Mutex, uploadedKeys *[]map[string]interface{},
 	store FileStore,
-	existingManifest map[string]int64,
 ) (int, error) {
 	rows, err := conn.Query(ctx, query, args...)
 	if err != nil {
@@ -450,7 +448,6 @@ func processPostgresChunkGeneric(
 		PW       *writer.JSONWriter
 		Schema   string
 		Rows     int
-		PartNum  int
 	}
 
 	partitionWriters := map[string]*PartitionWriter{}
@@ -568,16 +565,8 @@ func processPostgresChunkGeneric(
 		}
 		pw.File.Sync()
 		pw.File.Close()
-		fileKey := path.Join(s3Root, table, partitionKey,
-			fmt.Sprintf("%s-chunk-%d-part-%d.parquet", table, chunkNum, pw.PartNum))
-
-		// skip if already in manifest
-		if _, exists := existingManifest[fileKey]; exists {
-			fmt.Printf("[worker %d] Skipping upload for %s (already in manifest)\n", chunkNum, fileKey)
-			os.Remove(pw.FilePath)
-			continue
-		}
-
+		fileKey := path.Join(table, partitionKey,
+			fmt.Sprintf("%s-chunk-%d-part-0.parquet", table, chunkNum))
 		parquetFilePaths[fileKey] = pw.FilePath
 	}
 

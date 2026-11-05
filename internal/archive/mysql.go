@@ -34,7 +34,7 @@ func tryParseTime(val string) (time.Time, error) {
 }
 
 // ArchiveMySQL archives one or more tables into local Parquet files under a single backup name.
-func ArchiveMySQL(ctx context.Context, dsn string, tables []string, format, name string, opts ArchiveOptions) error {
+func ArchiveMySQL(ctx context.Context, dsn string, tables []string, name string, opts ArchiveOptions) error {
 	fmt.Println("[archive-mysql] Starting archive process")
 
 	baseDir := opts.LocalOutputDir
@@ -53,10 +53,9 @@ func ArchiveMySQL(ctx context.Context, dsn string, tables []string, format, name
 	defer db.Close()
 
 	var manifestTables []map[string]interface{}
-	emptyManifest := map[string]int64{}
 
 	for _, table := range tables {
-		files, err := archiveTable(ctx, db, store, "", emptyManifest, table, opts.Where, format, "", opts)
+		files, err := archiveTable(ctx, db, store, table, opts.Where, "", opts)
 		if err != nil {
 			return fmt.Errorf("[archive-mysql] failed to archive table %s: %w", table, err)
 		}
@@ -111,7 +110,7 @@ func ArchiveMySQL(ctx context.Context, dsn string, tables []string, format, name
 }
 
 // archiveTable handles chunking, processing, and storing for a single table.
-func archiveTable(ctx context.Context, db *sql.DB, store FileStore, s3Root string, existingManifest map[string]int64, table, where, format, partitionColumnFlag string, opts ArchiveOptions) ([]map[string]interface{}, error) {
+func archiveTable(ctx context.Context, db *sql.DB, store FileStore, table, where, partitionColumnFlag string, opts ArchiveOptions) ([]map[string]interface{}, error) {
 
 	// Progress tracker for this table
 	progress := &ProgressTracker{Table: table}
@@ -228,7 +227,7 @@ func archiveTable(ctx context.Context, db *sql.DB, store FileStore, s3Root strin
 				defer func() { <-sem }()
 				if err := processMySQLChunkIndex(
 					ctx, db, table, where, idColumn, startID, endID, int(chunkNum),
-					s3Root, partitionColumnUsed, store, &uploadedKeysMu, &uploadedKeys, existingManifest, progress,
+					partitionColumnUsed, store, &uploadedKeysMu, &uploadedKeys, progress,
 				); err != nil {
 					errCh <- fmt.Errorf("[worker %d] %w", chunkNum, err)
 				}
@@ -338,7 +337,7 @@ func archiveTable(ctx context.Context, db *sql.DB, store FileStore, s3Root strin
 				defer wg.Done()
 				defer func() { <-sem }()
 				if err := processMySQLChunkTime(
-					ctx, db, table, where, timeColumn, t0, t1, chunkNum, s3Root, partitionColumnUsed, store, &uploadedKeysMu, &uploadedKeys, existingManifest, progress,
+					ctx, db, table, where, timeColumn, t0, t1, chunkNum, partitionColumnUsed, store, &uploadedKeysMu, &uploadedKeys, progress,
 				); err != nil {
 					errCh <- fmt.Errorf("[worker %d] %w", chunkNum, err)
 				}
@@ -410,7 +409,7 @@ func archiveTable(ctx context.Context, db *sql.DB, store FileStore, s3Root strin
 			defer wg.Done()
 			defer func() { <-sem }()
 			if err := processMySQLChunkOffset(
-				ctx, db, table, where, offset, limit, chunkNum, s3Root, partitionColumnUsed, store, &uploadedKeysMu, &uploadedKeys, existingManifest, progress,
+				ctx, db, table, where, offset, limit, chunkNum, partitionColumnUsed, store, &uploadedKeysMu, &uploadedKeys, progress,
 			); err != nil {
 				errCh <- fmt.Errorf("[worker %d] %w", chunkNum, err)
 			}
@@ -431,7 +430,7 @@ func archiveTable(ctx context.Context, db *sql.DB, store FileStore, s3Root strin
 	fmt.Printf("[summary] Table %s: %d rows archived in %d chunks\n", table, progress.DoneRows, progress.DoneChunks)
 	return uploadedKeys, nil
 }
-func processMySQLChunkIndex(ctx context.Context, db *sql.DB, table, where, idColumn string, startID, endID int64, chunkNum int, s3Root, partitionColumn string, store FileStore, uploadedKeysMu *sync.Mutex, uploadedKeys *[]map[string]interface{}, existingManifest map[string]int64, progress *ProgressTracker) error {
+func processMySQLChunkIndex(ctx context.Context, db *sql.DB, table, where, idColumn string, startID, endID int64, chunkNum int, partitionColumn string, store FileStore, uploadedKeysMu *sync.Mutex, uploadedKeys *[]map[string]interface{}, progress *ProgressTracker) error {
 	quotedTable := quoteMySQLIdentifier(table)
 	quotedID := quoteMySQLIdentifier(idColumn)
 	query := fmt.Sprintf("SELECT * FROM %s WHERE (%s >= %d AND %s < %d)",
@@ -440,10 +439,10 @@ func processMySQLChunkIndex(ctx context.Context, db *sql.DB, table, where, idCol
 		query = fmt.Sprintf("SELECT * FROM %s WHERE (%s) AND (%s >= %d AND %s < %d)",
 			quotedTable, where, quotedID, startID, quotedID, endID)
 	}
-	return processMySQLChunkGeneric(ctx, db, query, table, chunkNum, s3Root, partitionColumn, store, uploadedKeysMu, uploadedKeys, existingManifest, progress)
+	return processMySQLChunkGeneric(ctx, db, query, table, chunkNum, partitionColumn, store, uploadedKeysMu, uploadedKeys, progress)
 }
 
-func processMySQLChunkTime(ctx context.Context, db *sql.DB, table, where, timeColumn string, t0, t1 time.Time, chunkNum int, s3Root, partitionColumn string, store FileStore, uploadedKeysMu *sync.Mutex, uploadedKeys *[]map[string]interface{}, existingManifest map[string]int64, progress *ProgressTracker) error {
+func processMySQLChunkTime(ctx context.Context, db *sql.DB, table, where, timeColumn string, t0, t1 time.Time, chunkNum int, partitionColumn string, store FileStore, uploadedKeysMu *sync.Mutex, uploadedKeys *[]map[string]interface{}, progress *ProgressTracker) error {
 	quotedTable := quoteMySQLIdentifier(table)
 	quotedTime := quoteMySQLIdentifier(timeColumn)
 	t0Str := t0.Format("2006-01-02 15:04:05")
@@ -454,19 +453,19 @@ func processMySQLChunkTime(ctx context.Context, db *sql.DB, table, where, timeCo
 		query = fmt.Sprintf("SELECT * FROM %s WHERE (%s) AND (%s >= '%s' AND %s < '%s')",
 			quotedTable, where, quotedTime, t0Str, quotedTime, t1Str)
 	}
-	return processMySQLChunkGeneric(ctx, db, query, table, chunkNum, s3Root, partitionColumn, store, uploadedKeysMu, uploadedKeys, existingManifest, progress)
+	return processMySQLChunkGeneric(ctx, db, query, table, chunkNum, partitionColumn, store, uploadedKeysMu, uploadedKeys, progress)
 }
 
-func processMySQLChunkOffset(ctx context.Context, db *sql.DB, table, where string, offset, limit, chunkNum int, s3Root, partitionColumn string, store FileStore, uploadedKeysMu *sync.Mutex, uploadedKeys *[]map[string]interface{}, existingManifest map[string]int64, progress *ProgressTracker) error {
+func processMySQLChunkOffset(ctx context.Context, db *sql.DB, table, where string, offset, limit, chunkNum int, partitionColumn string, store FileStore, uploadedKeysMu *sync.Mutex, uploadedKeys *[]map[string]interface{}, progress *ProgressTracker) error {
 	query := fmt.Sprintf("SELECT * FROM %s", quoteMySQLIdentifier(table))
 	if where != "" {
 		query += " WHERE " + where
 	}
 	query += fmt.Sprintf(" LIMIT %d OFFSET %d", limit, offset)
-	return processMySQLChunkGeneric(ctx, db, query, table, chunkNum, s3Root, partitionColumn, store, uploadedKeysMu, uploadedKeys, existingManifest, progress)
+	return processMySQLChunkGeneric(ctx, db, query, table, chunkNum, partitionColumn, store, uploadedKeysMu, uploadedKeys, progress)
 }
 
-func processMySQLChunkGeneric(ctx context.Context, db *sql.DB, query, table string, chunkNum int, s3Root, partitionColumn string, store FileStore, uploadedKeysMu *sync.Mutex, uploadedKeys *[]map[string]interface{}, existingManifest map[string]int64, progress *ProgressTracker) error {
+func processMySQLChunkGeneric(ctx context.Context, db *sql.DB, query, table string, chunkNum int, partitionColumn string, store FileStore, uploadedKeysMu *sync.Mutex, uploadedKeys *[]map[string]interface{}, progress *ProgressTracker) error {
 	// const maxBufferSize = 128 * 1024 * 1024 // 128MB
 
 	rows, err := db.Query(query)
@@ -489,7 +488,6 @@ func processMySQLChunkGeneric(ctx context.Context, db *sql.DB, query, table stri
 		PW       *writer.JSONWriter
 		Schema   string
 		Rows     int
-		PartNum  int
 	}
 
 	partitionWriters := map[string]*PartitionWriter{}
@@ -633,14 +631,8 @@ func processMySQLChunkGeneric(ctx context.Context, db *sql.DB, query, table stri
 
 	// Final flush for all partitions
 	for partitionKey, pw := range partitionWriters {
-		fileKey := path.Join(partitionKey, fmt.Sprintf("%s-chunk-%d-part-%d.parquet", table, chunkNum, pw.PartNum))
-		key := path.Join(s3Root, table, fileKey)
-		if _, exists := existingManifest[key]; exists {
-			fmt.Printf("[worker %d] Skipping upload for %s (already in manifest)\n", chunkNum, key)
-			pw.File.Close()
-			os.Remove(pw.FilePath)
-			continue
-		}
+		fileKey := path.Join(partitionKey, fmt.Sprintf("%s-chunk-%d-part-0.parquet", table, chunkNum))
+		key := path.Join(table, fileKey)
 		if pw.Rows == 0 {
 			pw.File.Close()
 			os.Remove(pw.FilePath)

@@ -72,7 +72,6 @@ var backupCmd = &cobra.Command{
 var (
 	dbURL      string
 	tables     string
-	format     string
 	backupName string
 	chunkSize  int
 	workers    int
@@ -121,10 +120,10 @@ var backupCreateCmd = &cobra.Command{
 		switch dbType {
 		case "mysql":
 			fmt.Printf("[mysql] Archiving tables: %s\n", strings.Join(tbls, ", "))
-			return archive.ArchiveMySQL(ctx, dbURL, tbls, format, backupName, opts)
+			return archive.ArchiveMySQL(ctx, dbURL, tbls, backupName, opts)
 		case "postgres":
 			fmt.Printf("[postgres] Archiving tables: %s\n", strings.Join(tbls, ", "))
-			return archive.ArchivePostgres(ctx, dbURL, tbls, format, backupName, nil, opts)
+			return archive.ArchivePostgres(ctx, dbURL, tbls, backupName, nil, opts)
 		default:
 			return fmt.Errorf("%s: expected postgres://, pg://, or mysql:// prefix", term.ColorError("unsupported database URL format"))
 		}
@@ -452,7 +451,6 @@ func init() {
 	// backup create flags
 	backupCreateCmd.Flags().StringVarP(&dbURL, "db-url", "d", "", "Database connection string (mysql://... or postgres://...)")
 	backupCreateCmd.Flags().StringVar(&tables, "tables", "", "Comma-separated list of tables to back up")
-	backupCreateCmd.Flags().StringVarP(&format, "format", "f", "parquet", "Export format (default: parquet)")
 	backupCreateCmd.Flags().StringVar(&backupName, "name", "", "Optional human-friendly name for the backup")
 	backupCreateCmd.Flags().IntVar(&chunkSize, "chunk-size", 0, "Rows per chunk (default: 2500000)")
 	backupCreateCmd.Flags().IntVar(&workers, "workers", 0, "Parallel archive workers (default: 4)")
