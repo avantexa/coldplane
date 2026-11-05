@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"testing"
 	"time"
 
@@ -30,10 +31,12 @@ func seedChunkingTables(driver, dsn string) error {
 		`DROP TABLE IF EXISTS inttest_plain`,
 		`DROP TABLE IF EXISTS inttest_events`,
 		`DROP TABLE IF EXISTS inttest_empty`,
+		`DROP TABLE IF EXISTS inttest_strkey`,
 		`CREATE TABLE inttest_ids (id INT PRIMARY KEY, label VARCHAR(20))`,
 		`CREATE TABLE inttest_plain (label VARCHAR(20), qty INT)`,
 		`CREATE TABLE inttest_events (happened_at TIMESTAMP, note VARCHAR(20))`,
 		`CREATE TABLE inttest_empty (id INT PRIMARY KEY, happened_at TIMESTAMP)`,
+		`CREATE TABLE inttest_strkey (code VARCHAR(10) PRIMARY KEY, qty INT)`,
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {
@@ -47,6 +50,11 @@ func seedChunkingTables(driver, dsn string) error {
 	}
 	for i := 1; i <= 7; i++ {
 		if _, err := db.Exec(fmt.Sprintf(`INSERT INTO inttest_plain VALUES ('p%d', %d)`, i, i)); err != nil {
+			return err
+		}
+	}
+	for i := 1; i <= 5; i++ {
+		if _, err := db.Exec(fmt.Sprintf(`INSERT INTO inttest_strkey VALUES ('k%d', %d)`, i, i)); err != nil {
 			return err
 		}
 	}
@@ -85,7 +93,7 @@ func testChunkingStrategies(t *testing.T, run func(ctx context.Context, name str
 	opts.ChunkSize = 10 // 25 ids spread over 73 values -> several PK chunks
 	opts.Workers = 2
 
-	if err := run(ctx, "chunking", opts, "inttest_ids", "inttest_plain", "inttest_events"); err != nil {
+	if err := run(ctx, "chunking", opts, "inttest_ids", "inttest_plain", "inttest_events", "inttest_strkey"); err != nil {
 		t.Fatalf("archive: %v", err)
 	}
 
@@ -97,6 +105,10 @@ func testChunkingStrategies(t *testing.T, run func(ctx context.Context, name str
 	}
 	if got := parquetRowCount(t, filepath.Join(backupDir, "chunking"), "inttest_events"); got != 12 {
 		t.Errorf("inttest_events: %d rows archived, want 12", got)
+	}
+	// A non-numeric primary key must not be used for range chunking.
+	if got := parquetRowCount(t, filepath.Join(backupDir, "chunking"), "inttest_strkey"); got != 5 {
+		t.Errorf("inttest_strkey: %d rows archived, want 5", got)
 	}
 
 	// An empty table and a WHERE that matches nothing both archive cleanly with no files.
@@ -139,6 +151,16 @@ func testChunkingStrategies(t *testing.T, run func(ctx context.Context, name str
 		case "inttest_events":
 			if m["partition_column"] != "happened_at" {
 				t.Errorf("inttest_events: partition_column = %v, want happened_at", m["partition_column"])
+			}
+			// 12 monthly rows under time chunking -> 12 distinct chunk numbers.
+			// OFFSET/LIMIT with ChunkSize=10 would use only chunks 0 and 1.
+			chunks := map[string]bool{}
+			for _, f := range m["files"].([]interface{}) {
+				key := f.(map[string]interface{})["key"].(string)
+				chunks[regexp.MustCompile(`-chunk-(\d+)-`).FindStringSubmatch(key)[1]] = true
+			}
+			if len(chunks) != 12 {
+				t.Errorf("inttest_events: %d distinct chunks, want 12 (time chunking)", len(chunks))
 			}
 		default:
 			if m["partition_column"] != nil {

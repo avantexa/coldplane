@@ -96,3 +96,19 @@ func TestDetectDecimalPrecision_NotADecimal(t *testing.T) {
 		}
 	}
 }
+
+func TestExtractDBNameFromMySQLDSN(t *testing.T) {
+	cases := map[string]string{
+		"u:p@tcp(h:3306)/shop?parseTime=true": "shop",
+		"u@/shop":                             "shop",
+		"u@/shop?x=1&y=2":                     "shop",
+		"u:p@tcp(h:3306)/":                    "",
+		"nodb":                                "",
+		"":                                    "",
+	}
+	for dsn, want := range cases {
+		if got := extractDBNameFromMySQLDSN(dsn); got != want {
+			t.Errorf("extractDBNameFromMySQLDSN(%q) = %q, want %q", dsn, got, want)
+		}
+	}
+}

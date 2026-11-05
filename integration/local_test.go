@@ -536,6 +536,9 @@ func TestLocalAnalyzePostgres(t *testing.T) {
 		}
 
 		found := false
+		if len(report.Tables) == 0 {
+			t.Fatal("no tables were analyzed")
+		}
 		for _, tr := range report.Tables {
 			t.Logf("  %s: %d total, %d archivable (%d%%)", tr.TableName, tr.TotalRows, tr.ArchivableRows, tr.ArchivablePct)
 			if tr.TableName == "inttest_orders" {
@@ -645,6 +648,9 @@ func TestLocalAnalyzeMySQL(t *testing.T) {
 			t.Fatal("expected at least 1 table in report")
 		}
 
+		if len(report.Tables) == 0 {
+			t.Fatal("no tables were analyzed")
+		}
 		for _, tr := range report.Tables {
 			t.Logf("  %s: %d total, %d archivable (%d%%)", tr.TableName, tr.TotalRows, tr.ArchivableRows, tr.ArchivablePct)
 		}
