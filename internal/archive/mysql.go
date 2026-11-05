@@ -3,18 +3,12 @@ package archive
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
-	"os"
 	"path"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/xitongsys/parquet-go-source/writerfile"
-	"github.com/xitongsys/parquet-go/parquet"
-	"github.com/xitongsys/parquet-go/writer"
 )
 
 // ArchiveMySQL archives one or more tables into local Parquet files under a single backup name.
@@ -123,7 +117,14 @@ func archiveTable(ctx context.Context, db *sql.DB, store FileStore, table, where
 	var uploadedKeysMu sync.Mutex
 	var uploadedKeys []map[string]interface{}
 	err = runChunks(n, opts.Workers, func(i int) error {
-		return processMySQLChunkGeneric(ctx, db, query(i), table, i, partitionColumnUsed, store, &uploadedKeysMu, &uploadedKeys, progress)
+		entries, err := processMySQLChunkGeneric(ctx, db, query(i), table, i, partitionColumnUsed, store, progress)
+		if err != nil {
+			return err
+		}
+		uploadedKeysMu.Lock()
+		uploadedKeys = append(uploadedKeys, entries...)
+		uploadedKeysMu.Unlock()
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -271,240 +272,63 @@ func mysqlOffsetChunks(db *sql.DB, table, where string, chunkSize int, progress 
 	}, nil
 }
 
-func processMySQLChunkGeneric(ctx context.Context, db *sql.DB, query, table string, chunkNum int, partitionColumn string, store FileStore, uploadedKeysMu *sync.Mutex, uploadedKeys *[]map[string]interface{}, progress *ProgressTracker) error {
-	// const maxBufferSize = 128 * 1024 * 1024 // 128MB
-
-	rows, err := db.Query(query)
+// processMySQLChunkGeneric runs one chunk query, writes its rows to Parquet
+// partitioned by partitionColumn, stores the files and returns their manifest entries.
+func processMySQLChunkGeneric(ctx context.Context, db *sql.DB, query, table string, chunkNum int, partitionColumn string, store FileStore, progress *ProgressTracker) ([]map[string]interface{}, error) {
+	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
-		return fmt.Errorf("[worker %d] query error: %w", chunkNum, err)
+		return nil, fmt.Errorf("query error: %w", err)
 	}
 	defer rows.Close()
 
 	columns, err := rows.Columns()
 	if err != nil {
-		return fmt.Errorf("[worker %d] failed to get columns: %w", chunkNum, err)
+		return nil, fmt.Errorf("failed to get columns: %w", err)
 	}
 	if debug {
 		fmt.Printf("[DEBUG] Detected columns: %v\n", columns)
 	}
+	partIdx := indexOf(columns, partitionColumn)
 
-	type PartitionWriter struct {
-		File     *os.File
-		FilePath string
-		PW       *writer.JSONWriter
-		Schema   string
-		Rows     int
-	}
-
-	partitionWriters := map[string]*PartitionWriter{}
-	parquetFilePaths := map[string]string{} // S3 key -> temp file path
-
-	var sampleRow []interface{}
-	var schema string
-	var initialized bool
-
-	// Helper: get year/month for a row
-	getPartition := func(vals []interface{}) (string, string) {
-		idx := -1
-		for i, name := range columns {
-			if name == partitionColumn {
-				idx = i
-				break
-			}
-		}
-		if idx == -1 {
-			if debug {
-				fmt.Printf("[DEBUG] partitionColumn '%s' not found. Columns: %v\n", partitionColumn, columns)
-			}
-			return "unknown", "unknown"
-		}
-		var t time.Time
-		raw := vals[idx]
-		if raw == nil {
-			if debug {
-				fmt.Printf("[DEBUG] getPartition: vals[%d] is nil for column '%s'\n", idx, partitionColumn)
-			}
-			return "unknown", "unknown"
-		}
-		switch v := raw.(type) {
-		case time.Time:
-			t = v
-		case string:
-			var err error
-			t, err = parseAnyTime(v)
-			if err != nil {
-				if debug {
-					fmt.Printf("[DEBUG] getPartition: failed to parse string, type=%T value=%#v err=%v\n", raw, raw, err)
-				}
-				return "unknown", "unknown"
-			}
-		case []byte:
-			s := string(v)
-			var err error
-			t, err = parseAnyTime(s)
-			if err != nil {
-				if debug {
-					fmt.Printf("[DEBUG] getPartition: failed to parse []byte, type=%T value=%#v err=%v\n", raw, raw, err)
-				}
-				return "unknown", "unknown"
-			}
-		default:
-			if debug {
-				fmt.Printf("[DEBUG] getPartition: unsupported type, type=%T value=%#v\n", raw, raw)
-			}
-			return "unknown", "unknown"
-		}
-		if t.IsZero() {
-			if debug {
-				fmt.Printf("[DEBUG] getPartition: zero time, type=%T value=%#v\n", raw, raw)
-			}
-			return "unknown", "unknown"
-		}
-		return t.Format("2006"), t.Format("01")
-	}
-
+	var pw *partitionedWriter
 	rowCount := 0
-
 	for rows.Next() {
 		values := make([]interface{}, len(columns))
-		valuePtrs := make([]interface{}, len(columns))
-		for i := range columns {
-			valuePtrs[i] = &values[i]
+		ptrs := make([]interface{}, len(columns))
+		for i := range values {
+			ptrs[i] = &values[i]
 		}
-		if err := rows.Scan(valuePtrs...); err != nil {
-			return fmt.Errorf("[worker %d] failed to scan row: %w", chunkNum, err)
+		if err := rows.Scan(ptrs...); err != nil {
+			pw.discard()
+			return nil, fmt.Errorf("failed to scan row: %w", err)
 		}
-		if !initialized {
-			sampleRow = make([]interface{}, len(values))
-			copy(sampleRow, values)
-			schema = inferParquetSchema(columns, sampleRow)
-			initialized = true
+		if pw == nil {
+			pw = newPartitionedWriter(inferParquetSchema(columns, values))
 		}
-
-		year, month := getPartition(values)
-		partitionKey := fmt.Sprintf("year=%s/month=%s", year, month)
-		pw, ok := partitionWriters[partitionKey]
-		if !ok {
-			tmpFile, err := os.CreateTemp("", "chunk-*.parquet")
-			if err != nil {
-				return fmt.Errorf("[worker %d] failed to create temp file: %w", chunkNum, err)
-			}
-			jsonWriter, err := writer.NewJSONWriter(schema, writerfile.NewWriterFile(tmpFile), 4)
-			if err != nil {
-				tmpFile.Close()
-				os.Remove(tmpFile.Name())
-				return fmt.Errorf("[worker %d] failed to create Parquet writer: %w", chunkNum, err)
-			}
-			// Enable ZSTD compression
-			jsonWriter.CompressionType = parquet.CompressionCodec_ZSTD
-			pw = &PartitionWriter{
-				File:     tmpFile,
-				FilePath: tmpFile.Name(),
-				PW:       jsonWriter,
-				Schema:   schema,
-			}
-			partitionWriters[partitionKey] = pw
+		if err := pw.write(partitionKey(valueAt(values, partIdx)), rowToMap(columns, values, nil)); err != nil {
+			pw.discard()
+			return nil, err
 		}
-
-		// Map row to JSON — skip nil values so the parquet writer treats them
-		// as missing (NULL) rather than trying to assert nil as a typed value.
-		rowMap := make(map[string]interface{})
-		for i, name := range columns {
-			val := values[i]
-			if val == nil {
-				continue
-			}
-			if b, ok := val.([]byte); ok {
-				rowMap[name] = string(b)
-			} else {
-				rowMap[name] = toParquetSafeValue(val)
-			}
-		}
-		rowJSON, _ := json.Marshal(rowMap)
-		if err := pw.PW.Write(string(rowJSON)); err != nil {
-			return fmt.Errorf("[worker %d] failed to write row: %w", chunkNum, err)
-		}
-		pw.Rows++
 		rowCount++
-
 		if rowCount%100_000 == 0 {
 			progress.AddRows(100_000)
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("[worker %d] row iteration error: %w", chunkNum, err)
+		pw.discard()
+		return nil, fmt.Errorf("row iteration error: %w", err)
 	}
 
-	// Final flush for all partitions
-	for partitionKey, pw := range partitionWriters {
-		fileKey := path.Join(partitionKey, fmt.Sprintf("%s-chunk-%d-part-0.parquet", table, chunkNum))
-		key := path.Join(table, fileKey)
-		if pw.Rows == 0 {
-			pw.File.Close()
-			os.Remove(pw.FilePath)
-			continue
-		}
-		if err := pw.PW.WriteStop(); err != nil {
-			return fmt.Errorf("[worker %d] failed to finalize Parquet: %w", chunkNum, err)
-		}
-		pw.File.Sync()
-		pw.File.Close()
-		// Use the new fileKey for manifest and upload
-		parquetFilePaths[key] = pw.FilePath
+	entries, err := storeChunk(ctx, store, pw, table, chunkNum, rowCount)
+	if err != nil {
+		return nil, err
 	}
-
-	// Store Parquet partition files in parallel (up to 4 concurrent stores)
-	var uploadWg sync.WaitGroup
-	uploadSem := make(chan struct{}, 4)
-	var uploadErr error
-	var uploadErrOnce sync.Once
-
-	for key, filePath := range parquetFilePaths {
-		uploadWg.Add(1)
-		uploadSem <- struct{}{}
-		go func(key, filePath string) {
-			defer uploadWg.Done()
-			defer func() { <-uploadSem }()
-
-			fileSize, err := store.StoreFile(ctx, key, filePath)
-			if err != nil {
-				uploadErrOnce.Do(func() {
-					uploadErr = fmt.Errorf("[worker %d] store failed for %s: %w", chunkNum, key, err)
-				})
-				os.Remove(filePath)
-				return
-			}
-
-			uploadedKeysMu.Lock()
-			*uploadedKeys = append(*uploadedKeys, map[string]interface{}{
-				"key":        key,
-				"size_bytes": fileSize,
-			})
-			uploadedKeysMu.Unlock()
-
-			fmt.Printf("[%s] [worker %d] Stored chunk (%d rows, %.2f MB)\n",
-				table, chunkNum, rowCount, float64(fileSize)/1024/1024)
-		}(key, filePath)
-	}
-	uploadWg.Wait()
-	if uploadErr != nil {
-		return uploadErr
-	}
-
-	// Log if no files were uploaded for this table
-	if len(*uploadedKeys) == 0 {
-		fmt.Printf("[archive-mysql] Table %s had no uploaded files (empty?)\n", table)
-	}
-
-	// Final progress update for this chunk
-	if rowCount%100_000 != 0 {
-		progress.AddRows(rowCount % 100_000)
-	}
+	progress.AddRows(rowCount % 100_000)
 	progress.ChunkDone()
 	if debug {
-		fmt.Printf("[worker %d] Done: %d rows (Parquet files written and uploaded)\n", chunkNum, rowCount)
+		fmt.Printf("[worker %d] Done: %d rows (Parquet files written and stored)\n", chunkNum, rowCount)
 	}
-	return nil // keep error nil
+	return entries, nil
 }
 
 // DetectChunkingColumn inspects the table for the best chunking column: numeric PK, then DATETIME, else fallback to offset/limit.
