@@ -46,7 +46,3 @@ func Yellow(msg string) string {
 func Cyan(msg string) string {
 	return fmt.Sprintf("%s%s%s", cyan, msg, reset)
 }
-
-func Dim(msg string) string {
-	return fmt.Sprintf("%s%s%s", dim, msg, reset)
-}
