@@ -69,32 +69,7 @@ func ListLocalBackups(baseDir string) ([]LocalBackupInfo, error) {
 		if err := json.Unmarshal(data, &manifest); err != nil {
 			continue
 		}
-
-		info := LocalBackupInfo{
-			Name: getString(manifest, "name"),
-			Path: filepath.Join(baseDir, entry.Name()),
-		}
-		if info.Name == "" {
-			info.Name = entry.Name()
-		}
-		info.DBType = getString(manifest, "db_type")
-		info.DBName = getString(manifest, "db_name")
-		info.CreatedAt = getString(manifest, "created_at")
-
-		if sz, ok := manifest["size_bytes"].(float64); ok {
-			info.SizeBytes = int64(sz)
-		}
-
-		if tables, ok := manifest["tables"].([]interface{}); ok {
-			for _, t := range tables {
-				if tMap, ok := t.(map[string]interface{}); ok {
-					if name, ok := tMap["name"].(string); ok {
-						info.Tables = append(info.Tables, name)
-					}
-				}
-			}
-		}
-
+		info := backupInfoFromManifest(manifest, filepath.Join(baseDir, entry.Name()))
 		backups = append(backups, info)
 	}
 
@@ -102,6 +77,34 @@ func ListLocalBackups(baseDir string) ([]LocalBackupInfo, error) {
 		return backups[i].CreatedAt > backups[j].CreatedAt // newest first
 	})
 	return backups, nil
+}
+
+// backupInfoFromManifest summarizes a parsed index.json; the directory name
+// stands in when the manifest has no name.
+func backupInfoFromManifest(manifest map[string]interface{}, dir string) LocalBackupInfo {
+	info := LocalBackupInfo{
+		Name:      getString(manifest, "name"),
+		Path:      dir,
+		DBType:    getString(manifest, "db_type"),
+		DBName:    getString(manifest, "db_name"),
+		CreatedAt: getString(manifest, "created_at"),
+	}
+	if info.Name == "" {
+		info.Name = filepath.Base(dir)
+	}
+	if sz, ok := manifest["size_bytes"].(float64); ok {
+		info.SizeBytes = int64(sz)
+	}
+	if tables, ok := manifest["tables"].([]interface{}); ok {
+		for _, t := range tables {
+			if tMap, ok := t.(map[string]interface{}); ok {
+				if name, ok := tMap["name"].(string); ok {
+					info.Tables = append(info.Tables, name)
+				}
+			}
+		}
+	}
+	return info
 }
 
 // ReadLocalManifest reads and parses the index.json from a local backup directory.

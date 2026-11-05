@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -144,13 +145,18 @@ func listLocalBackups() error {
 	if err != nil {
 		return err
 	}
-	if len(backups) == 0 {
-		fmt.Println("No backups found.")
-		return nil
-	}
+	renderLocalBackups(os.Stdout, backups)
+	return nil
+}
 
+// renderLocalBackups prints the backups as a table, newest first.
+func renderLocalBackups(w io.Writer, backups []archive.LocalBackupInfo) {
+	if len(backups) == 0 {
+		fmt.Fprintln(w, "No backups found.")
+		return
+	}
 	t := prettytable.NewWriter()
-	t.SetOutputMirror(os.Stdout)
+	t.SetOutputMirror(w)
 	t.SetStyle(prettytable.StyleRounded)
 	t.AppendHeader(prettytable.Row{"Name", "Database", "DB Type", "Tables", "Created At", "Size", "Path"})
 	for _, b := range backups {
@@ -165,7 +171,6 @@ func listLocalBackups() error {
 		})
 	}
 	t.Render()
-	return nil
 }
 
 var backupDeleteCmd = &cobra.Command{

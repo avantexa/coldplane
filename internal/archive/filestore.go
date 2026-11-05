@@ -34,25 +34,28 @@ func (l *LocalFileStore) StoreFile(ctx context.Context, key string, localPath st
 		return stat.Size(), nil
 	}
 
-	// Fallback to copy (cross-filesystem)
-	src, err := os.Open(localPath)
+	return moveByCopy(localPath, dest)
+}
+
+// moveByCopy copies src to dst and removes src; used when a rename fails
+// because the two paths are on different filesystems.
+func moveByCopy(src, dst string) (int64, error) {
+	in, err := os.Open(src)
 	if err != nil {
 		return 0, fmt.Errorf("open source: %w", err)
 	}
-	defer src.Close()
+	defer in.Close()
 
-	dst, err := os.Create(dest)
+	out, err := os.Create(dst)
 	if err != nil {
 		return 0, fmt.Errorf("create dest: %w", err)
 	}
-	defer dst.Close()
+	defer out.Close()
 
-	written, err := io.Copy(dst, src)
+	written, err := io.Copy(out, in)
 	if err != nil {
 		return 0, fmt.Errorf("copy file: %w", err)
 	}
-
-	// Remove the original temp file
-	os.Remove(localPath)
+	os.Remove(src)
 	return written, nil
 }

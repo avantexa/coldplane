@@ -1,6 +1,7 @@
 package archive
 
 import (
+	"github.com/jackc/pgx/v5/pgtype"
 	"strings"
 	"testing"
 	"time"
@@ -310,5 +311,32 @@ func TestDefaultOptions(t *testing.T) {
 	}
 	if opts.Where != "" {
 		t.Errorf("Where should default to empty, got %q", opts.Where)
+	}
+}
+
+func TestToParquetSafeValue_MoreTypes(t *testing.T) {
+	cases := map[string]struct {
+		in   interface{}
+		want interface{}
+	}{
+		"int16":  {int16(3), int64(3)},
+		"uint8":  {uint8(4), int64(4)},
+		"uint16": {uint16(5), int64(5)},
+		"uint64": {uint64(6), int64(6)},
+		"uuid":   {[16]uint8{0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}, "12345678-9abc-def0-1122-334455667788"},
+		"map":    {map[string]int{"a": 1}, `{"a":1}`},
+		"slice":  {[]int{1, 2}, `[1,2]`},
+	}
+	for name, c := range cases {
+		if got := toParquetSafeValue(c.in); got != c.want {
+			t.Errorf("%s: got %#v, want %#v", name, got, c.want)
+		}
+	}
+	num := pgtype.Numeric{Valid: true}
+	if got := toParquetSafeValue(num); got != num {
+		t.Errorf("pgtype.Numeric should pass through, got %#v", got)
+	}
+	if got := toParquetSafeValue(make(chan int)); got == nil || got.(string) == "" {
+		t.Errorf("unmarshalable value should fall back to fmt, got %#v", got)
 	}
 }
