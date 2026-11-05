@@ -152,15 +152,16 @@ func testChunkingStrategies(t *testing.T, run func(ctx context.Context, name str
 			if m["partition_column"] != "happened_at" {
 				t.Errorf("inttest_events: partition_column = %v, want happened_at", m["partition_column"])
 			}
-			// 12 monthly rows under time chunking -> 12 distinct chunk numbers.
-			// OFFSET/LIMIT with ChunkSize=10 would use only chunks 0 and 1.
+			// 12 monthly rows over 334 days in 30-day windows -> about a dozen
+			// chunk numbers (a window can hold two rows or none). OFFSET/LIMIT
+			// with ChunkSize=10 would use only chunks 0 and 1.
 			chunks := map[string]bool{}
 			for _, f := range m["files"].([]interface{}) {
 				key := f.(map[string]interface{})["key"].(string)
 				chunks[regexp.MustCompile(`-chunk-(\d+)-`).FindStringSubmatch(key)[1]] = true
 			}
-			if len(chunks) != 12 {
-				t.Errorf("inttest_events: %d distinct chunks, want 12 (time chunking)", len(chunks))
+			if len(chunks) < 10 {
+				t.Errorf("inttest_events: %d distinct chunks, want at least 10 (time chunking)", len(chunks))
 			}
 		default:
 			if m["partition_column"] != nil {
