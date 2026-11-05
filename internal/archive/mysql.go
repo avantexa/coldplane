@@ -208,63 +208,21 @@ func mysqlOffsetChunks(db *sql.DB, table, where string, chunkSize int, progress 
 	}, nil
 }
 
-// processMySQLChunkGeneric runs one chunk query, writes its rows to Parquet
-// partitioned by partitionColumn, stores the files and returns their manifest entries.
+// processMySQLChunkGeneric runs one chunk query and archives its rows.
 func processMySQLChunkGeneric(ctx context.Context, db *sql.DB, query, table string, chunkNum int, partitionColumn string, store FileStore, progress *ProgressTracker) ([]map[string]interface{}, error) {
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query error: %w", err)
 	}
 	defer rows.Close()
-
-	columns, err := rows.Columns()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get columns: %w", err)
-	}
-	if debug {
-		fmt.Printf("[DEBUG] Detected columns: %v\n", columns)
-	}
-	partIdx := indexOf(columns, partitionColumn)
-
-	var pw *partitionedWriter
-	rowCount := 0
-	for rows.Next() {
-		values := make([]interface{}, len(columns))
-		ptrs := make([]interface{}, len(columns))
-		for i := range values {
-			ptrs[i] = &values[i]
-		}
-		if err := rows.Scan(ptrs...); err != nil {
-			pw.discard()
-			return nil, fmt.Errorf("failed to scan row: %w", err)
-		}
-		if pw == nil {
-			pw = newPartitionedWriter(inferParquetSchema(columns, values))
-		}
-		if err := pw.write(partitionKey(valueAt(values, partIdx)), rowToMap(columns, values, nil)); err != nil {
-			pw.discard()
-			return nil, err
-		}
-		rowCount++
-		if rowCount%100_000 == 0 {
-			progress.AddRows(100_000)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		pw.discard()
-		return nil, fmt.Errorf("row iteration error: %w", err)
-	}
-
-	entries, err := storeChunk(ctx, store, pw, table, chunkNum, rowCount)
+	src, err := newSQLRowSource(rows)
 	if err != nil {
 		return nil, err
 	}
-	progress.AddRows(rowCount % 100_000)
-	progress.ChunkDone()
 	if debug {
-		fmt.Printf("[worker %d] Done: %d rows (Parquet files written and stored)\n", chunkNum, rowCount)
+		fmt.Printf("[DEBUG] Detected columns: %v\n", src.columns)
 	}
-	return entries, nil
+	return writeChunk(ctx, src, table, chunkNum, partitionColumn, store, progress)
 }
 
 // DetectChunkingColumn picks the best chunking column: a numeric primary

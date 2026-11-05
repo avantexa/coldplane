@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -183,18 +184,9 @@ func toParquetSafeValue(val interface{}) interface{} {
 		return nil // should not reach here; callers skip nil values
 	case string, int, int32, int64, float32, float64:
 		return v
-	case int8:
-		return int64(v)
-	case int16:
-		return int64(v)
-	case uint8:
-		return int64(v)
-	case uint16:
-		return int64(v)
-	case uint32:
-		return int64(v)
-	case uint64:
-		return int64(v)
+	case int8, int16, uint8, uint16, uint32, uint64:
+		// Narrow and unsigned integers widen to INT64.
+		return reflect.ValueOf(v).Convert(reflect.TypeOf(int64(0))).Int()
 	case time.Time:
 		// Convert to Unix millis for INT64/TIMESTAMP_MILLIS parquet columns.
 		// PostgreSQL timestamps are already converted before reaching here,

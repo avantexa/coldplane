@@ -161,8 +161,11 @@ func (w *partitionedWriter) finish() (map[string]string, error) {
 	return out, nil
 }
 
-// discard closes and removes every temp file.
+// discard closes and removes every temp file. Safe on a nil writer.
 func (w *partitionedWriter) discard() {
+	if w == nil {
+		return
+	}
 	for _, p := range w.parts {
 		p.file.Close()
 		os.Remove(p.path)

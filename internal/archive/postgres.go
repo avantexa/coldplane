@@ -196,57 +196,17 @@ func ArchivePostgres(ctx context.Context, dbURL string, tables []string, name st
 	return nil
 }
 
-// processPostgresChunkGeneric runs one chunk query, writes its rows to Parquet
-// partitioned by partitionColumn, stores the files and returns their manifest entries.
+// processPostgresChunkGeneric runs one chunk query and archives its rows.
 func processPostgresChunkGeneric(ctx context.Context, conn *pgx.Conn, query string, args []interface{}, table string, chunkNum int, partitionColumn string, store FileStore, progress *ProgressTracker) ([]map[string]interface{}, error) {
 	rows, err := conn.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query error: %w", err)
 	}
 	defer rows.Close()
-
-	fields := rows.FieldDescriptions()
-	if fields == nil {
+	if rows.FieldDescriptions() == nil {
 		return nil, fmt.Errorf("FieldDescriptions returned nil")
 	}
-	columns, timestampCols := pgColumns(fields)
-	partIdx := indexOf(columns, partitionColumn)
-
-	var pw *partitionedWriter
-	rowCount := 0
-	for rows.Next() {
-		values, err := rows.Values()
-		if err != nil {
-			pw.discard()
-			return nil, fmt.Errorf("failed to get row values: %w", err)
-		}
-		if pw == nil {
-			pw = newPartitionedWriter(inferParquetSchema(columns, values))
-		}
-		if err := pw.write(partitionKey(valueAt(values, partIdx)), rowToMap(columns, values, timestampCols)); err != nil {
-			pw.discard()
-			return nil, err
-		}
-		rowCount++
-		if rowCount%100_000 == 0 {
-			progress.AddRows(100_000)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		pw.discard()
-		return nil, fmt.Errorf("row iteration error: %w", err)
-	}
-
-	entries, err := storeChunk(ctx, store, pw, table, chunkNum, rowCount)
-	if err != nil {
-		return nil, err
-	}
-	progress.AddRows(rowCount % 100_000)
-	progress.ChunkDone()
-	if debug {
-		fmt.Printf("[worker %d] Done: %d rows (Parquet files written and stored)\n", chunkNum, rowCount)
-	}
-	return entries, nil
+	return writeChunk(ctx, &pgxRowSource{rows: rows}, table, chunkNum, partitionColumn, store, progress)
 }
 
 // pgColumns returns the column names and the positions of date/timestamp
