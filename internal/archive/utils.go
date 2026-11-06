@@ -89,6 +89,22 @@ func NormalizeMySQLDSN(input string) string {
 	return dsn
 }
 
+// sampleForKind returns a representative value for a declared column kind,
+// or the observed sample when the kind is unknown.
+func sampleForKind(kind colKind, sample interface{}) interface{} {
+	switch kind {
+	case kindInt:
+		return int64(0)
+	case kindFloat:
+		return float64(0)
+	case kindTime:
+		return time.Time{}
+	case kindText:
+		return ""
+	}
+	return sample
+}
+
 // inferParquetSchema builds the parquet-go JSON schema for a row shape. A
 // column whose kind the driver declared is typed from that kind; the rest
 // are typed from the sample value, so only a NULL in a column of unknown
@@ -100,16 +116,7 @@ func inferParquetSchema(fieldNames []string, sampleRow []interface{}, kinds []co
 		var tag string
 		val := sampleRow[i]
 		if i < len(kinds) {
-			switch kinds[i] {
-			case kindInt:
-				val = int64(0)
-			case kindFloat:
-				val = float64(0)
-			case kindTime:
-				val = time.Time{}
-			case kindText:
-				val = ""
-			}
+			val = sampleForKind(kinds[i], val)
 		}
 
 		// All columns use repetitiontype=OPTIONAL so parquet-go handles
