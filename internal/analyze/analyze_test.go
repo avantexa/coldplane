@@ -45,69 +45,9 @@ func TestParseDuration(t *testing.T) {
 
 // --- quotePGIdentifier ---
 
-func TestQuotePGIdentifier(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"orders", `"orders"`},
-		{`table"name`, `"table""name"`},
-		{"", `""`},
-	}
-	for _, tt := range tests {
-		got := quotePGIdentifier(tt.input)
-		if got != tt.want {
-			t.Errorf("quotePGIdentifier(%q) = %q, want %q", tt.input, got, tt.want)
-		}
-	}
-}
-
 // --- quoteMySQLIdentifier ---
 
-func TestQuoteMySQLIdentifier(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"orders", "`orders`"},
-		{"table`name", "`table``name`"},
-		{"", "``"},
-	}
-	for _, tt := range tests {
-		got := quoteMySQLIdentifier(tt.input)
-		if got != tt.want {
-			t.Errorf("quoteMySQLIdentifier(%q) = %q, want %q", tt.input, got, tt.want)
-		}
-	}
-}
-
 // --- parseMySQLTime ---
-
-func TestParseMySQLTime(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   string
-		wantErr bool
-	}{
-		{"datetime", "2025-06-15 10:30:00", false},
-		{"date only", "2025-06-15", false},
-		{"iso with Z", "2025-06-15T10:30:00Z", false},
-		{"invalid", "not-a-date", true},
-		{"empty", "", true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseMySQLTime(tt.input)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("parseMySQLTime(%q) error=%v, wantErr=%v", tt.input, err, tt.wantErr)
-				return
-			}
-			if !tt.wantErr && got.IsZero() {
-				t.Errorf("parseMySQLTime(%q) returned zero time", tt.input)
-			}
-		})
-	}
-}
 
 // --- humanCount (via cmd package, test logic here) ---
 

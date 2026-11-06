@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/avantexa/coldplane/internal/dbutil"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,7 +34,7 @@ func ArchiveMySQL(ctx context.Context, dsn string, tables []string, name string,
 		manifestTables = append(manifestTables, tableManifest(table, partCol, files))
 	}
 
-	total, err := writeBackupManifest(backupDir, name, "mysql", extractDBNameFromMySQLDSN(dsn), manifestTables)
+	total, err := writeBackupManifest(backupDir, name, "mysql", dbutil.DBNameFromDSN(dsn), manifestTables)
 	if err != nil {
 		return fmt.Errorf("[archive-mysql] failed to write local manifest: %w", err)
 	}
@@ -106,7 +107,7 @@ func mysqlPartitionColumn(db *sql.DB, table string) string {
 // mysqlSampleRow returns the table's column names and the values of its first
 // row, or a nil row when the table is empty or cannot be read.
 func mysqlSampleRow(db *sql.DB, table string) ([]string, []interface{}) {
-	rows, err := db.Query(fmt.Sprintf("SELECT * FROM %s LIMIT 1", quoteMySQLIdentifier(table)))
+	rows, err := db.Query(fmt.Sprintf("SELECT * FROM %s LIMIT 1", dbutil.QuoteMySQL(table)))
 	if err != nil {
 		return nil, nil
 	}
@@ -178,8 +179,8 @@ func mysqlTimeChunks(db *sql.DB, table, where, timeColumn string, progress *Prog
 		mysqlReportNoRows(db, table, "time range")
 		return 0, nil, nil
 	}
-	minTime, errMin := parseAnyTime(minStr.String)
-	maxTime, errMax := parseAnyTime(maxStr.String)
+	minTime, errMin := dbutil.ParseTime(minStr.String)
+	maxTime, errMax := dbutil.ParseTime(maxStr.String)
 	if errMin != nil || errMax != nil {
 		return 0, nil, fmt.Errorf("[archive-mysql] failed to parse min/max timestamp: min: %v max: %v", errMin, errMax)
 	}
@@ -273,7 +274,7 @@ func isMySQLIntegerType(dataType string) bool {
 
 // mysqlFirstDatetimeColumn returns the first DATETIME/TIMESTAMP column of the table, or "".
 func mysqlFirstDatetimeColumn(db *sql.DB, table string) (string, error) {
-	rows, err := db.Query(fmt.Sprintf("SHOW COLUMNS FROM %s", quoteMySQLIdentifier(table)))
+	rows, err := db.Query(fmt.Sprintf("SHOW COLUMNS FROM %s", dbutil.QuoteMySQL(table)))
 	if err != nil {
 		return "", err
 	}
@@ -289,19 +290,4 @@ func mysqlFirstDatetimeColumn(db *sql.DB, table string) (string, error) {
 		}
 	}
 	return "", rows.Err()
-}
-
-// Helper to extract db name from MySQL DSN
-func extractDBNameFromMySQLDSN(dsn string) string {
-	// Find last '/' and strip any '?'
-	slash := strings.LastIndex(dsn, "/")
-	if slash == -1 || slash == len(dsn)-1 {
-		return ""
-	}
-	rest := dsn[slash+1:]
-	q := strings.Index(rest, "?")
-	if q >= 0 {
-		rest = rest[:q]
-	}
-	return rest
 }

@@ -20,7 +20,8 @@ coldplane/
 │   │   ├── options.go         # ArchiveOptions (ChunkSize, Workers, LocalOutputDir, Where)
 │   │   ├── filestore.go       # FileStore interface + LocalFileStore
 │   │   ├── local.go           # Backup directory helpers (list, delete, manifest)
-│   │   └── utils.go           # Schema inference, identifier quoting, ProgressTracker
+│   │   └── utils.go           # Schema inference, value sanitizing, ProgressTracker
+│   ├── dbutil/                # Shared SQL helpers: identifier quoting, time parsing, DB name from DSN
 │   ├── query/
 │   │   └── duck.go            # RunLocal: DuckDB in-memory view over the backup's Parquet files
 │   └── term/

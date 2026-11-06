@@ -7,40 +7,6 @@ import (
 	"time"
 )
 
-func TestQuoteMySQLIdentifier(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"tablename", "`tablename`"},
-		{"table`name", "`table``name`"},
-		{"", "``"},
-	}
-	for _, tt := range tests {
-		got := quoteMySQLIdentifier(tt.input)
-		if got != tt.expected {
-			t.Errorf("quoteMySQLIdentifier(%q) = %q, want %q", tt.input, got, tt.expected)
-		}
-	}
-}
-
-func TestQuotePGIdentifier(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"tablename", `"tablename"`},
-		{`table"name`, `"table""name"`},
-		{"", `""`},
-	}
-	for _, tt := range tests {
-		got := quotePGIdentifier(tt.input)
-		if got != tt.expected {
-			t.Errorf("quotePGIdentifier(%q) = %q, want %q", tt.input, got, tt.expected)
-		}
-	}
-}
-
 func TestNormalizeMySQLDSN(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -75,23 +41,6 @@ func TestNormalizeMySQLDSN(t *testing.T) {
 				t.Errorf("NormalizeMySQLDSN(%q) = %q, want %q", tt.input, got, tt.expected)
 			}
 		})
-	}
-}
-
-func TestExtractDBName(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"postgres://user:pass@host:5432/mydb", "mydb"},
-		{"postgres://user:pass@host:5432/mydb?sslmode=require", "mydb"},
-		{"mysql://user:pass@host:3306/orders", "orders"},
-	}
-	for _, tt := range tests {
-		got := ExtractDBName(tt.input)
-		if got != tt.expected {
-			t.Errorf("ExtractDBName(%q) = %q, want %q", tt.input, got, tt.expected)
-		}
 	}
 }
 

@@ -18,18 +18,6 @@ var debug bool
 // SetDebug toggles debug output.
 func SetDebug(v bool) { debug = v }
 
-// quoteMySQLIdentifier wraps a MySQL identifier (table/column name) in backticks,
-// escaping any internal backticks. Use this instead of raw string interpolation.
-func quoteMySQLIdentifier(s string) string {
-	return "`" + strings.ReplaceAll(s, "`", "``") + "`"
-}
-
-// quotePGIdentifier wraps a PostgreSQL identifier (table/column name) in double quotes,
-// escaping any internal double quotes. Use this instead of raw string interpolation.
-func quotePGIdentifier(s string) string {
-	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
-}
-
 // ProgressTracker tracks progress for table archiving.
 type ProgressTracker struct {
 	Table       string
@@ -137,11 +125,6 @@ func inferParquetSchema(fieldNames []string, sampleRow []interface{}) string {
 
 	schema := fmt.Sprintf(`{"Tag":"name=root","Fields":[%s]}`, strings.Join(tags, ","))
 	return schema
-}
-
-func ExtractDBName(dbURL string) string {
-	parts := strings.Split(dbURL, "/") // Split always yields at least one part
-	return strings.Split(parts[len(parts)-1], "?")[0]
 }
 
 // toParquetSafeValue converts Go values into types that the parquet-go JSON

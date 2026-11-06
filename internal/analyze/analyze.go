@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/avantexa/coldplane/internal/dbutil"
 	"regexp"
 	"strconv"
 	"strings"
@@ -168,7 +169,7 @@ func analyzePostgresTable(ctx context.Context, pool *pgxpool.Pool, table string,
 	}
 	var archivable int64
 	err = pool.QueryRow(ctx,
-		fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE %s < $1`, quotePGIdentifier(table), quotePGIdentifier(dateCol)), cutoff).Scan(&archivable)
+		fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE %s < $1`, dbutil.QuotePG(table), dbutil.QuotePG(dateCol)), cutoff).Scan(&archivable)
 	if err != nil {
 		return nil, fmt.Errorf("count old rows: %w", err)
 	}
@@ -182,7 +183,7 @@ func pgTableStats(ctx context.Context, pool *pgxpool.Pool, table string) (totalR
 	err = pool.QueryRow(ctx,
 		`SELECT COALESCE(reltuples::bigint, 0) FROM pg_class WHERE relname = $1`, table).Scan(&totalRows)
 	if err != nil || totalRows <= 0 {
-		err = pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %s`, quotePGIdentifier(table))).Scan(&totalRows)
+		err = pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %s`, dbutil.QuotePG(table))).Scan(&totalRows)
 		if err != nil {
 			return 0, 0, fmt.Errorf("count rows: %w", err)
 		}
@@ -200,9 +201,9 @@ func pgTableStats(ctx context.Context, pool *pgxpool.Pool, table string) (totalR
 // pgDateRange returns MIN and MAX of the date column.
 func pgDateRange(ctx context.Context, pool *pgxpool.Pool, table, dateCol string) (time.Time, time.Time, error) {
 	var minTime, maxTime sql.NullTime
-	qc := quotePGIdentifier(dateCol)
+	qc := dbutil.QuotePG(dateCol)
 	err := pool.QueryRow(ctx,
-		fmt.Sprintf(`SELECT MIN(%s), MAX(%s) FROM %s`, qc, qc, quotePGIdentifier(table))).Scan(&minTime, &maxTime)
+		fmt.Sprintf(`SELECT MIN(%s), MAX(%s) FROM %s`, qc, qc, dbutil.QuotePG(table))).Scan(&minTime, &maxTime)
 	if err != nil {
 		return time.Time{}, time.Time{}, fmt.Errorf("get date range: %w", err)
 	}
@@ -265,7 +266,7 @@ func analyzeMySQLTable(ctx context.Context, db *sql.DB, table string, cutoff tim
 	}
 	var archivable int64
 	err = db.QueryRowContext(ctx,
-		fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s < ?", quoteMySQLIdentifier(table), quoteMySQLIdentifier(dateCol)),
+		fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s < ?", dbutil.QuoteMySQL(table), dbutil.QuoteMySQL(dateCol)),
 		cutoff.Format("2006-01-02 15:04:05")).Scan(&archivable)
 	if err != nil {
 		return nil, fmt.Errorf("count old rows: %w", err)
@@ -285,7 +286,7 @@ func mysqlTableStats(ctx context.Context, db *sql.DB, table string) (totalRows, 
 		return 0, 0, fmt.Errorf("get table stats: %w", err)
 	}
 	if totalRows == 0 {
-		err = db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s", quoteMySQLIdentifier(table))).Scan(&totalRows)
+		err = db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s", dbutil.QuoteMySQL(table))).Scan(&totalRows)
 		if err != nil {
 			return 0, 0, fmt.Errorf("count rows: %w", err)
 		}
@@ -299,20 +300,20 @@ func mysqlTableStats(ctx context.Context, db *sql.DB, table string) (totalRows, 
 // mysqlDateRange returns MIN and MAX of the date column.
 func mysqlDateRange(ctx context.Context, db *sql.DB, table, dateCol string) (time.Time, time.Time, error) {
 	var minStr, maxStr sql.NullString
-	qc := quoteMySQLIdentifier(dateCol)
+	qc := dbutil.QuoteMySQL(dateCol)
 	err := db.QueryRowContext(ctx,
-		fmt.Sprintf("SELECT MIN(%s), MAX(%s) FROM %s", qc, qc, quoteMySQLIdentifier(table))).Scan(&minStr, &maxStr)
+		fmt.Sprintf("SELECT MIN(%s), MAX(%s) FROM %s", qc, qc, dbutil.QuoteMySQL(table))).Scan(&minStr, &maxStr)
 	if err != nil {
 		return time.Time{}, time.Time{}, fmt.Errorf("get date range: %w", err)
 	}
 	if !minStr.Valid || !maxStr.Valid {
 		return time.Time{}, time.Time{}, fmt.Errorf("date column %q has no valid values", dateCol)
 	}
-	minTime, err := parseMySQLTime(minStr.String)
+	minTime, err := dbutil.ParseTime(minStr.String)
 	if err != nil {
 		return time.Time{}, time.Time{}, fmt.Errorf("parse min date: %w", err)
 	}
-	maxTime, err := parseMySQLTime(maxStr.String)
+	maxTime, err := dbutil.ParseTime(maxStr.String)
 	if err != nil {
 		return time.Time{}, time.Time{}, fmt.Errorf("parse max date: %w", err)
 	}
@@ -321,7 +322,7 @@ func mysqlDateRange(ctx context.Context, db *sql.DB, table, dateCol string) (tim
 
 func detectMySQLDateColumn(ctx context.Context, db *sql.DB, table string) (string, error) {
 	rows, err := db.QueryContext(ctx,
-		fmt.Sprintf("SHOW COLUMNS FROM %s", quoteMySQLIdentifier(table)))
+		fmt.Sprintf("SHOW COLUMNS FROM %s", dbutil.QuoteMySQL(table)))
 	if err != nil {
 		return "", err
 	}
@@ -339,20 +340,6 @@ func detectMySQLDateColumn(ctx context.Context, db *sql.DB, table string) (strin
 		}
 	}
 	return "", rows.Err()
-}
-
-func parseMySQLTime(s string) (time.Time, error) {
-	formats := []string{
-		"2006-01-02 15:04:05",
-		"2006-01-02T15:04:05Z",
-		"2006-01-02",
-	}
-	for _, f := range formats {
-		if t, err := time.Parse(f, s); err == nil {
-			return t, nil
-		}
-	}
-	return time.Time{}, fmt.Errorf("could not parse time: %q", s)
 }
 
 // stringRows is the part of sql.Rows and pgx.Rows needed to read one text column.
@@ -415,14 +402,6 @@ func newTableReport(table, dateCol string, totalRows, sizeBytes int64, oldest, n
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-func quotePGIdentifier(s string) string {
-	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
-}
-
-func quoteMySQLIdentifier(s string) string {
-	return "`" + strings.ReplaceAll(s, "`", "``") + "`"
-}
 
 // ParseDuration parses human-friendly durations like "18m", "1y", "6m", "1y6m", "90d".
 // Months = 30 days, years = 365 days.

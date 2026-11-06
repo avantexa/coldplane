@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/avantexa/coldplane/internal/dbutil"
 	"strings"
 	"sync"
 	"time"
@@ -76,7 +77,7 @@ func pgChunkPlan(ctx context.Context, conn *pgxpool.Conn, table, where string, c
 // pgPartitionColumn infers the partition column from the last
 // timestamp-looking value of the table's first row.
 func pgPartitionColumn(ctx context.Context, conn *pgxpool.Conn, table string) string {
-	rows, err := conn.Query(ctx, fmt.Sprintf("SELECT * FROM %s LIMIT 1", quotePGIdentifier(table)))
+	rows, err := conn.Query(ctx, fmt.Sprintf("SELECT * FROM %s LIMIT 1", dbutil.QuotePG(table)))
 	if err != nil {
 		fmt.Printf("[WARNING] Table %s: no valid partition column found or inferred.\n", table)
 		return ""
@@ -190,7 +191,7 @@ func ArchivePostgres(ctx context.Context, dbURL string, tables []string, name st
 		manifestTables = append(manifestTables, tableManifest(table, partCol, files))
 	}
 
-	total, err := writeBackupManifest(backupDir, name, "postgres", ExtractDBName(dbURL), manifestTables)
+	total, err := writeBackupManifest(backupDir, name, "postgres", dbutil.DBNameFromDSN(dbURL), manifestTables)
 	if err != nil {
 		return fmt.Errorf("[archive-postgres] failed to write local manifest: %w", err)
 	}
@@ -220,22 +221,6 @@ func pgColumns(fields []pgconn.FieldDescription) ([]string, map[int]bool) {
 		}
 	}
 	return columns, timestampCols
-}
-
-// parseAnyTime parses the timestamp layouts both engines emit as text.
-func parseAnyTime(s string) (time.Time, error) {
-	formats := []string{
-		"2006-01-02 15:04:05",
-		"2006-01-02T15:04:05Z07:00",
-		"2006-01-02",
-		time.RFC3339,
-	}
-	for _, f := range formats {
-		if t, err := time.Parse(f, s); err == nil {
-			return t, nil
-		}
-	}
-	return time.Time{}, fmt.Errorf("could not parse time: %q", s)
 }
 
 // detectPostgresChunkingColumn picks the best chunking column: the first

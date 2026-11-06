@@ -1,13 +1,17 @@
 package archive
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/avantexa/coldplane/internal/dbutil"
+)
 
 const mysqlTimeLayout = "2006-01-02 15:04:05"
 
 // mysqlRangeQuery selects the rows of table where lo <= col < hi, with lo and
 // hi already rendered as SQL literals, optionally narrowed by a WHERE clause.
 func mysqlRangeQuery(table, where, col, lo, hi string) string {
-	qt, qc := quoteMySQLIdentifier(table), quoteMySQLIdentifier(col)
+	qt, qc := dbutil.QuoteMySQL(table), dbutil.QuoteMySQL(col)
 	pred := fmt.Sprintf("(%s >= %s AND %s < %s)", qc, lo, qc, hi)
 	if where != "" {
 		return fmt.Sprintf("SELECT * FROM %s WHERE (%s) AND %s", qt, where, pred)
@@ -17,7 +21,7 @@ func mysqlRangeQuery(table, where, col, lo, hi string) string {
 
 // mysqlOffsetQuery selects one LIMIT/OFFSET page of table.
 func mysqlOffsetQuery(table, where string, offset, limit int) string {
-	q := "SELECT * FROM " + quoteMySQLIdentifier(table)
+	q := "SELECT * FROM " + dbutil.QuoteMySQL(table)
 	if where != "" {
 		q += " WHERE " + where
 	}
@@ -26,7 +30,7 @@ func mysqlOffsetQuery(table, where string, offset, limit int) string {
 
 // mysqlCountQuery counts the rows of table, optionally narrowed by a WHERE clause.
 func mysqlCountQuery(table, where string) string {
-	q := "SELECT COUNT(*) FROM " + quoteMySQLIdentifier(table)
+	q := "SELECT COUNT(*) FROM " + dbutil.QuoteMySQL(table)
 	if where != "" {
 		q += " WHERE " + where
 	}
@@ -35,8 +39,8 @@ func mysqlCountQuery(table, where string) string {
 
 // mysqlMinMaxQuery selects MIN(col), MAX(col) of table, optionally narrowed by a WHERE clause.
 func mysqlMinMaxQuery(table, where, col string) string {
-	qc := quoteMySQLIdentifier(col)
-	q := fmt.Sprintf("SELECT MIN(%s), MAX(%s) FROM %s", qc, qc, quoteMySQLIdentifier(table))
+	qc := dbutil.QuoteMySQL(col)
+	q := fmt.Sprintf("SELECT MIN(%s), MAX(%s) FROM %s", qc, qc, dbutil.QuoteMySQL(table))
 	if where != "" {
 		q += " WHERE " + where
 	}
@@ -45,7 +49,7 @@ func mysqlMinMaxQuery(table, where, col string) string {
 
 // pgRangeQuery selects the rows of table where $1 <= col < $2.
 func pgRangeQuery(table, where, col string) string {
-	qt, qc := quotePGIdentifier(table), quotePGIdentifier(col)
+	qt, qc := dbutil.QuotePG(table), dbutil.QuotePG(col)
 	if where != "" {
 		return fmt.Sprintf("SELECT * FROM %s WHERE (%s) AND (%s >= $1 AND %s < $2)", qt, where, qc, qc)
 	}
@@ -54,7 +58,7 @@ func pgRangeQuery(table, where, col string) string {
 
 // pgOffsetQuery selects one page of table with LIMIT $1 OFFSET $2.
 func pgOffsetQuery(table, where string) string {
-	q := "SELECT * FROM " + quotePGIdentifier(table)
+	q := "SELECT * FROM " + dbutil.QuotePG(table)
 	if where != "" {
 		q += " WHERE " + where
 	}
@@ -63,7 +67,7 @@ func pgOffsetQuery(table, where string) string {
 
 // pgCountQuery counts the rows of table, optionally narrowed by a WHERE clause.
 func pgCountQuery(table, where string) string {
-	q := "SELECT COUNT(*) FROM " + quotePGIdentifier(table)
+	q := "SELECT COUNT(*) FROM " + dbutil.QuotePG(table)
 	if where != "" {
 		q += " WHERE " + where
 	}
@@ -72,8 +76,8 @@ func pgCountQuery(table, where string) string {
 
 // pgMinMaxQuery selects MIN(col), MAX(col) of table, optionally narrowed by a WHERE clause.
 func pgMinMaxQuery(table, where, col string) string {
-	qc := quotePGIdentifier(col)
-	q := fmt.Sprintf("SELECT MIN(%s), MAX(%s) FROM %s", qc, qc, quotePGIdentifier(table))
+	qc := dbutil.QuotePG(col)
+	q := fmt.Sprintf("SELECT MIN(%s), MAX(%s) FROM %s", qc, qc, dbutil.QuotePG(table))
 	if where != "" {
 		q += " WHERE " + where
 	}

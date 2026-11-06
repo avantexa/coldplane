@@ -1,6 +1,10 @@
 package archive
 
-import "time"
+import (
+	"time"
+
+	"github.com/avantexa/coldplane/internal/dbutil"
+)
 
 // timeValue interprets a scanned column value as a timestamp. It returns the
 // zero time when the value is not a time or a parseable time string.
@@ -9,10 +13,10 @@ func timeValue(v interface{}) time.Time {
 	case time.Time:
 		return val
 	case string:
-		t, _ := parseAnyTime(val)
+		t, _ := dbutil.ParseTime(val)
 		return t
 	case []byte:
-		t, _ := parseAnyTime(string(val))
+		t, _ := dbutil.ParseTime(string(val))
 		return t
 	}
 	return time.Time{}

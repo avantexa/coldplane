@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/avantexa/coldplane/internal/dbutil"
 	"io"
 	"os"
 	"os/signal"
@@ -97,7 +98,7 @@ var backupCreateCmd = &cobra.Command{
 		// Auto-generate backupName if not provided
 		if backupName == "" {
 			now := time.Now().UTC().Format("20060102_150405")
-			dbName := archive.ExtractDBName(dbURL)
+			dbName := dbutil.DBNameFromDSN(dbURL)
 			if len(tbls) == 1 {
 				backupName = fmt.Sprintf("%s_%s", tbls[0], now)
 			} else if len(tbls) > 1 {
@@ -265,7 +266,7 @@ best. No data leaves your machine.`,
 
 		// Detect DB type before normalization strips the prefix
 		dbType := detectDBType(dbURL)
-		dbName := archive.ExtractDBName(dbURL)
+		dbName := dbutil.DBNameFromDSN(dbURL)
 		dbURL = normalizeDSN(dbURL)
 
 		duration, err := analyze.ParseDuration(olderThan)
