@@ -10,6 +10,12 @@ Typical use: find the tables holding years of old rows, archive the old rows to 
 
 Both `postgres://` and `pg://` connection schemes are supported for PostgreSQL.
 
+### How it reads your database
+
+coldplane embeds [DuckDB](https://duckdb.org) and uses its `postgres` and `mysql` extensions to pull each chunk of rows straight into Parquet, so column types survive: decimals stay `DECIMAL`, booleans `BOOLEAN`, dates `DATE`, uuids `UUID`, arrays arrays. Each chunk is a plain `SELECT ... WHERE <range>` in your database's own SQL, so `--where` is written in PostgreSQL or MySQL syntax, and the database only ever sees bounded range queries.
+
+The two extensions are not in the binary. The first time you archive from an engine, coldplane downloads its extension (about 40 MB) into `~/.duckdb/extensions` and says so. On machines without internet access, pre-install the extensions and point `COLDPLANE_DUCKDB_EXTENSIONS` at that directory. `--verbose` logs every SQL statement sent to your database.
+
 ---
 
 ## Installation

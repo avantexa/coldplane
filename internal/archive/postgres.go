@@ -5,57 +5,48 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"github.com/avantexa/coldplane/internal/dbutil"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/avantexa/coldplane/internal/dbutil"
+	"github.com/avantexa/coldplane/internal/duck"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// archivePostgresTable archives one table and returns its manifest entries
-// and the partition column it used.
-func archivePostgresTable(ctx context.Context, pool *pgxpool.Pool, store FileStore, table, where string, opts ArchiveOptions) ([]FileEntry, string, error) {
+// archivePostgresTable archives one table and returns its manifest entry.
+func archivePostgresTable(ctx context.Context, pool *pgxpool.Pool, eng *duck.Engine, kind duck.Kind, table, backupDir string, opts ArchiveOptions) (TableEntry, error) {
 	progress := &ProgressTracker{Table: table}
 
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to acquire connection: %w", err)
+		return TableEntry{}, fmt.Errorf("failed to acquire connection: %w", err)
 	}
 	defer conn.Release()
 
-	kind, column, err := pgChunkColumn(ctx, conn.Conn(), table)
+	columns, err := sourceColumns(ctx, eng, kind, table)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to detect chunk column: %w", err)
+		return TableEntry{}, err
+	}
+	chunkKind, column, err := pgChunkColumn(ctx, conn.Conn(), table)
+	if err != nil {
+		return TableEntry{}, fmt.Errorf("failed to detect chunk column: %w", err)
 	}
 	// The time column we chunk on is also the natural partition column.
 	partitionColumn := column
-	if kind != chunkByTime {
+	if chunkKind != chunkByTime {
 		partitionColumn = pgPartitionColumn(ctx, conn, table)
 	}
-	plan, err := pgChunkPlan(ctx, conn, table, where, kind, column, opts.ChunkSize, progress)
+	plan, err := pgChunkPlan(ctx, conn, table, opts.Where, chunkKind, column, opts.ChunkSize, progress)
 	if err != nil {
-		return nil, partitionColumn, err
+		return TableEntry{}, err
 	}
-	entries, err := archiveTable(ctx, pgRunner(pool), store, table, partitionColumn, plan, opts.Workers, progress)
-	return entries, partitionColumn, err
-}
-
-// pgRunner executes chunk queries, each on its own pooled connection.
-func pgRunner(pool *pgxpool.Pool) chunkRunner {
-	return func(ctx context.Context, query string, args []interface{}) (rowSource, func(), error) {
-		conn, err := pool.Acquire(ctx)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to acquire DB connection: %w", err)
-		}
-		rows, err := conn.Query(ctx, query, args...)
-		if err != nil {
-			conn.Release()
-			return nil, nil, fmt.Errorf("query error: %w", err)
-		}
-		return &pgxRowSource{rows: rows}, func() { rows.Close(); conn.Release() }, nil
+	files, err := archiveTable(ctx, eng, kind, srcAlias, backupDir, table, partitionColumn, plan, opts.Workers, progress)
+	if err != nil {
+		return TableEntry{}, err
 	}
+	return tableEntry(table, partitionColumn, files, columns, chunkKind, column, progress.DoneRows), nil
 }
 
 // pgChunkPlan plans the chunks for the detected strategy.
@@ -123,9 +114,8 @@ func pgTimeChunks(ctx context.Context, conn *pgxpool.Conn, table, where, timeCol
 	progress.TotalChunks = len(ranges)
 	fmt.Printf("[archive-postgres] Using %q for time chunking: min=%s max=%s window=%s (%d chunks)\n",
 		timeColumn, minT.Time.Format(time.RFC3339), maxT.Time.Format(time.RFC3339), window, len(ranges))
-	sel := pgRangeQuery(table, where, timeColumn)
-	return chunkPlan{n: len(ranges), query: func(i int) (string, []interface{}) {
-		return sel, []interface{}{ranges[i].Start, ranges[i].End}
+	return chunkPlan{n: len(ranges), query: func(i int) string {
+		return pgRangeQuery(table, where, timeColumn, sqlString(ranges[i].Start.Format(pgTimeLayout)), sqlString(ranges[i].End.Format(pgTimeLayout)))
 	}}, nil
 }
 
@@ -143,9 +133,8 @@ func pgIDChunks(ctx context.Context, conn *pgxpool.Conn, table, where, idColumn 
 	progress.TotalRows = maxID.Int64 - minID.Int64 + 1
 	progress.TotalChunks = len(ranges)
 	fmt.Printf("[archive-postgres] Using PK %q for chunking: min=%d max=%d, chunks=%d\n", idColumn, minID.Int64, maxID.Int64, len(ranges))
-	sel := pgRangeQuery(table, where, idColumn)
-	return chunkPlan{n: len(ranges), query: func(i int) (string, []interface{}) {
-		return sel, []interface{}{ranges[i].Start, ranges[i].End}
+	return chunkPlan{n: len(ranges), query: func(i int) string {
+		return pgRangeQuery(table, where, idColumn, strconv.FormatInt(ranges[i].Start, 10), strconv.FormatInt(ranges[i].End, 10))
 	}}, nil
 }
 
@@ -160,9 +149,8 @@ func pgOffsetChunks(ctx context.Context, conn *pgxpool.Conn, table, where string
 	progress.TotalRows = int64(totalRows)
 	progress.TotalChunks = len(pages)
 	fmt.Printf("[archive-postgres] Row count: %d; Chunks: %d\n", totalRows, len(pages))
-	sel := pgOffsetQuery(table, where)
-	return chunkPlan{n: len(pages), query: func(i int) (string, []interface{}) {
-		return sel, []interface{}{pages[i].Limit, pages[i].Offset}
+	return chunkPlan{n: len(pages), query: func(i int) string {
+		return pgOffsetQuery(table, where, pages[i].Limit, pages[i].Offset)
 	}}, nil
 }
 
@@ -178,7 +166,6 @@ func ArchivePostgres(ctx context.Context, dbURL string, tables []string, name st
 			discardBackupDir(backupDir)
 		}
 	}()
-	store := &LocalFileStore{BaseDir: backupDir}
 
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
@@ -186,48 +173,31 @@ func ArchivePostgres(ctx context.Context, dbURL string, tables []string, name st
 	}
 	defer pool.Close()
 
+	eng, err := duck.Open(ctx)
+	if err != nil {
+		return fmt.Errorf("[archive-postgres] %w", err)
+	}
+	defer eng.Close()
+	kind, err := eng.Attach(ctx, dbURL, srcAlias, true)
+	if err != nil {
+		return fmt.Errorf("[archive-postgres] %w", err)
+	}
+
 	var manifestTables []TableEntry
 	for _, table := range tables {
-		files, partCol, err := archivePostgresTable(ctx, pool, store, table, opts.Where, opts)
+		entry, err := archivePostgresTable(ctx, pool, eng, kind, table, backupDir, opts)
 		if err != nil {
 			return fmt.Errorf("[archive-postgres] failed to archive table %s: %w", table, err)
 		}
-		manifestTables = append(manifestTables, newTableEntry(table, partCol, files))
+		manifestTables = append(manifestTables, entry)
 	}
 
-	total, err := writeBackupManifest(backupDir, name, "postgres", dbutil.DBNameFromDSN(dbURL), manifestTables)
+	total, err := writeBackupManifest(backupDir, name, "postgres", dbutil.DBNameFromDSN(dbURL), opts.Where, manifestTables)
 	if err != nil {
 		return fmt.Errorf("[archive-postgres] failed to write local manifest: %w", err)
 	}
 	fmt.Printf("[archive-postgres] Backup complete: %s (%d bytes)\n", backupDir, total)
 	return nil
-}
-
-// pgColumns returns the column names and kinds from pgx field descriptions.
-func pgColumns(fields []pgconn.FieldDescription) ([]string, []colKind) {
-	columns := make([]string, len(fields))
-	kinds := make([]colKind, len(fields))
-	for i, f := range fields {
-		columns[i] = f.Name
-		kinds[i] = pgColKind(f.DataTypeOID)
-	}
-	return columns, kinds
-}
-
-// pgColKind maps a PostgreSQL type OID to a colKind. numeric, bool, uuid,
-// json and the rest stay unknown and are inferred from their first value.
-func pgColKind(oid uint32) colKind {
-	switch oid {
-	case 20, 21, 23: // int8, int2, int4
-		return kindInt
-	case 700, 701: // float4, float8
-		return kindFloat
-	case 1082, 1114, 1184: // date, timestamp, timestamptz
-		return kindTime
-	case 25, 1043, 1042, 19: // text, varchar, bpchar, name
-		return kindText
-	}
-	return kindUnknown
 }
 
 // pgChunkColumn picks the chunking strategy: the first date/timestamp

@@ -1,7 +1,6 @@
 package archive
 
 import (
-	"path/filepath"
 	"testing"
 	"time"
 )
@@ -45,43 +44,10 @@ func TestPlanOffsetChunks_Edges(t *testing.T) {
 	}
 }
 
-func TestMoveByCopy_MissingSourceReturnsZero(t *testing.T) {
-	n, err := moveByCopy(filepath.Join(t.TempDir(), "nope"), filepath.Join(t.TempDir(), "dst"))
-	if err == nil || n != 0 {
-		t.Errorf("got %d, %v", n, err)
-	}
-}
-
 func TestTimeColumns_RowLongerThanColumns(t *testing.T) {
 	cols := []string{"id"}
 	row := []interface{}{int64(1), time.Now()}
 	if got := firstTimeColumn(cols, row); got != "" {
 		t.Errorf("first: %q", got)
-	}
-}
-
-func TestValueAtAndIndexOf(t *testing.T) {
-	vals := []interface{}{"a", "b"}
-	if got := valueAt(vals, len(vals)); got != nil {
-		t.Errorf("index == len must be nil, got %v", got)
-	}
-	cols := []string{"id", "ts"}
-	if indexOf(cols, "ts") != 1 || indexOf(cols, "nope") != -1 {
-		t.Errorf("indexOf: %d %d", indexOf(cols, "ts"), indexOf(cols, "nope"))
-	}
-}
-
-func TestEpochMillis(t *testing.T) {
-	ts := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	if ms, ok := epochMillis(ts); !ok || ms != ts.UnixMilli() {
-		t.Errorf("time: %d %v", ms, ok)
-	}
-	if ms, ok := epochMillis("2025-01-01 00:00:00"); !ok || ms != ts.UnixMilli() {
-		t.Errorf("string: %d %v", ms, ok)
-	}
-	for _, v := range []interface{}{"junk", 42, nil, []byte("x")} {
-		if ms, ok := epochMillis(v); ok || ms != 0 {
-			t.Errorf("%#v: %d %v", v, ms, ok)
-		}
 	}
 }

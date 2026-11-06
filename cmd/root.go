@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/avantexa/coldplane/internal/dbutil"
+	"github.com/avantexa/coldplane/internal/duck"
 	"io"
 	"os"
 	"os/signal"
@@ -453,10 +454,10 @@ var verbose bool
 
 func init() {
 	// global flags
-	rootCmd.PersistentFlags().BoolVar(&verbose, "verbose", false, "Enable verbose debug output")
+	rootCmd.PersistentFlags().BoolVar(&verbose, "verbose", false, "Log the SQL sent to the database")
 	rootCmd.PersistentPreRun = func(cmd *cobra.Command, args []string) {
 		if verbose {
-			archive.SetDebug(true)
+			duck.SetDebug(true)
 		}
 	}
 

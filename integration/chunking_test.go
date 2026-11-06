@@ -297,8 +297,9 @@ func TestLocalNullFirstRowTyping(t *testing.T) {
 		if err := db.QueryRow(q).Scan(&tn, &tf, &ts, &tts, &n); err != nil {
 			t.Fatalf("probe: %v", err)
 		}
-		if tn != "BIGINT" || tf != "DOUBLE" || ts != "VARCHAR" || !strings.HasPrefix(tts, "TIMESTAMP") || n != 42 {
-			t.Errorf("types n=%s f=%s s=%s ts=%s max(n)=%d; want BIGINT DOUBLE VARCHAR TIMESTAMP* 42", tn, tf, ts, tts, n)
+		// MySQL FLOAT is 4 bytes and stays FLOAT; Postgres FLOAT is double precision.
+		if tn != "BIGINT" || (tf != "DOUBLE" && tf != "FLOAT") || ts != "VARCHAR" || !strings.HasPrefix(tts, "TIMESTAMP") || n != 42 {
+			t.Errorf("types n=%s f=%s s=%s ts=%s max(n)=%d; want BIGINT FLOAT|DOUBLE VARCHAR TIMESTAMP* 42", tn, tf, ts, tts, n)
 		}
 	}
 
@@ -319,5 +320,73 @@ func TestLocalNullFirstRowTyping(t *testing.T) {
 			t.Fatal(err)
 		}
 		check(t, filepath.Join(opts.OutputDir, "nulls"))
+	})
+}
+
+// parquetTypes returns DuckDB's type for each named column of an archived table.
+func parquetTypes(t *testing.T, backupDir, table string, columns ...string) map[string]string {
+	t.Helper()
+	db, err := sql.Open("duckdb", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	glob := filepath.Join(backupDir, table, "**", "*.parquet")
+	rows, err := db.Query(fmt.Sprintf("DESCRIBE SELECT * FROM read_parquet('%s', hive_partitioning=false)", glob))
+	if err != nil {
+		t.Fatalf("describe %s: %v", table, err)
+	}
+	defer rows.Close()
+	got := map[string]string{}
+	for rows.Next() {
+		var name, typ, a, b, c, d sql.NullString
+		if err := rows.Scan(&name, &typ, &a, &b, &c, &d); err != nil {
+			t.Fatal(err)
+		}
+		got[name.String] = typ.String
+	}
+	return got
+}
+
+// The archive must keep the source's types: decimals, booleans, dates, blobs,
+// and on Postgres uuids and arrays, instead of flattening them to strings.
+func TestLocalTypeFidelity(t *testing.T) {
+	skipUnlessLocalTest(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	t.Run("postgres", func(t *testing.T) {
+		if err := seedPostgresAllTypes(); err != nil {
+			t.Fatal(err)
+		}
+		opts := archive.DefaultOptions()
+		opts.OutputDir = t.TempDir()
+		if err := archive.ArchivePostgres(ctx, pgDSN, []string{"inttest_alltypes"}, "types", opts); err != nil {
+			t.Fatal(err)
+		}
+		got := parquetTypes(t, filepath.Join(opts.OutputDir, "types"), "inttest_alltypes")
+		want := map[string]string{"col_numeric": "DECIMAL(12,4)", "col_boolean": "BOOLEAN", "col_uuid": "UUID", "col_date": "DATE", "col_bytea": "BLOB", "col_int_array": "INTEGER[]", "col_bigint": "BIGINT", "col_timestamp": "TIMESTAMP"}
+		for col, typ := range want {
+			if got[col] != typ {
+				t.Errorf("%s: archived as %q, want %q", col, got[col], typ)
+			}
+		}
+	})
+	t.Run("mysql", func(t *testing.T) {
+		if err := seedMySQLAllTypes(); err != nil {
+			t.Fatal(err)
+		}
+		opts := archive.DefaultOptions()
+		opts.OutputDir = t.TempDir()
+		if err := archive.ArchiveMySQL(ctx, mysqlGoDSN, []string{"inttest_alltypes"}, "types", opts); err != nil {
+			t.Fatal(err)
+		}
+		got := parquetTypes(t, filepath.Join(opts.OutputDir, "types"), "inttest_alltypes")
+		want := map[string]string{"col_decimal": "DECIMAL(12,4)", "col_boolean": "BOOLEAN", "col_date": "DATE", "col_blob": "BLOB", "col_bigint": "BIGINT", "col_datetime": "TIMESTAMP", "col_tinyint": "TINYINT"}
+		for col, typ := range want {
+			if got[col] != typ {
+				t.Errorf("%s: archived as %q, want %q", col, got[col], typ)
+			}
+		}
 	})
 }

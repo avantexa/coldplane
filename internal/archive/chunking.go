@@ -3,8 +3,13 @@ package archive
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
 	"sync"
 	"time"
+
+	"github.com/avantexa/coldplane/internal/duck"
 )
 
 const (
@@ -109,37 +114,61 @@ const (
 	chunkByTime                    // windows of a timestamp column
 )
 
-// chunkPlan is a table's planned chunk queries: n chunks, each a query with
-// its bound arguments.
-type chunkPlan struct {
-	n     int
-	query func(i int) (string, []interface{})
+func (k chunkKind) String() string {
+	switch k {
+	case chunkByID:
+		return "id"
+	case chunkByTime:
+		return "time"
+	}
+	return "offset"
 }
 
-// chunkRunner executes one chunk query against an engine and returns its rows
-// plus a release function that closes them.
-type chunkRunner func(ctx context.Context, query string, args []interface{}) (rowSource, func(), error)
+// chunkPlan is a table's planned chunk queries: n chunks, each a native SQL
+// SELECT for the source engine that DuckDB passes through unchanged.
+type chunkPlan struct {
+	n     int
+	query func(i int) string
+}
 
-// archiveTable runs every chunk of plan through run, with up to workers in
-// parallel, writes the rows as partitioned Parquet into store and returns the
-// manifest entries of the stored files.
-func archiveTable(ctx context.Context, run chunkRunner, store FileStore, table, partitionColumn string, plan chunkPlan, workers int, progress *ProgressTracker) ([]FileEntry, error) {
+const unknownPartition = "year=unknown/month=unknown"
+
+// archiveTable runs every chunk of plan as a DuckDB COPY into Parquet under
+// <backupDir>/<table>, with up to workers chunks in flight, and returns the
+// manifest entries of the written files.
+func archiveTable(ctx context.Context, eng *duck.Engine, kind duck.Kind, alias, backupDir, table, partitionColumn string, plan chunkPlan, workers int, progress *ProgressTracker) ([]FileEntry, error) {
+	// COPY does not create missing directories, partitioned or not.
+	tableDir := filepath.Join(backupDir, table)
+	mk := tableDir
+	if partitionColumn == "" {
+		mk = filepath.Join(tableDir, filepath.FromSlash(unknownPartition))
+	}
+	if err := os.MkdirAll(mk, 0755); err != nil {
+		return nil, fmt.Errorf("create table dir: %w", err)
+	}
 	var mu sync.Mutex
 	var entries []FileEntry
 	err := runChunks(plan.n, workers, func(i int) error {
-		q, args := plan.query(i)
-		src, release, err := run(ctx, q, args)
+		res, err := eng.DB().ExecContext(ctx, duck.CopyChunkSQL(kind, alias, plan.query(i), partitionColumn, tableDir, table, i))
+		if err != nil {
+			return fmt.Errorf("copy chunk to parquet: %w", err)
+		}
+		rows, _ := res.RowsAffected()
+		files, err := chunkFiles(backupDir, table, i)
 		if err != nil {
 			return err
 		}
-		defer release()
-		got, err := writeChunk(ctx, src, table, i, partitionColumn, store, progress)
-		if err != nil {
-			return err
+		if rows == 0 { // an empty unpartitioned chunk still writes a header-only file
+			for _, f := range files {
+				os.Remove(filepath.Join(backupDir, filepath.FromSlash(f.Key)))
+			}
+			files = nil
 		}
 		mu.Lock()
-		entries = append(entries, got...)
+		entries = append(entries, files...)
 		mu.Unlock()
+		progress.AddRows(int(rows))
+		progress.ChunkDone()
 		return nil
 	})
 	if err != nil {
@@ -147,4 +176,24 @@ func archiveTable(ctx context.Context, run chunkRunner, store FileStore, table, 
 	}
 	fmt.Printf("[summary] Table %s: %d rows archived in %d chunks\n", table, progress.DoneRows, progress.DoneChunks)
 	return entries, nil
+}
+
+// chunkFiles lists the Parquet files one chunk wrote, keyed relative to backupDir.
+func chunkFiles(backupDir, table string, chunkNum int) ([]FileEntry, error) {
+	pattern := filepath.Join(backupDir, table, "year=*", "month=*", fmt.Sprintf("%s-chunk-%d-part-*.parquet", table, chunkNum))
+	paths, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("list chunk files: %w", err)
+	}
+	sort.Strings(paths)
+	var files []FileEntry
+	for _, p := range paths {
+		st, err := os.Stat(p)
+		if err != nil {
+			return nil, fmt.Errorf("stat %s: %w", p, err)
+		}
+		rel, _ := filepath.Rel(backupDir, p)
+		files = append(files, FileEntry{Key: filepath.ToSlash(rel), SizeBytes: st.Size()})
+	}
+	return files, nil
 }

@@ -14,19 +14,17 @@ coldplane/
 │   └── version.go             # version command; Version/Commit/BuildDate set via ldflags
 ├── internal/
 │   ├── analyze/               # Age analysis: find rows older than a threshold per table
+│   ├── duck/                  # DuckDB engine: open, attach pg/mysql (extensions), passthrough + COPY SQL
 │   ├── archive/               # Database → Parquet archiving
 │   │   ├── postgres.go        # ArchivePostgres: Postgres chunk detection, planners, runner
 │   │   ├── mysql.go           # ArchiveMySQL: MySQL chunk detection, planners, runner
-│   │   ├── chunking.go        # chunkKind/chunkPlan/chunkRunner, planners, runChunks, shared archiveTable
-│   │   ├── chunkwriter.go     # rowSource + colKind (driver-typed columns), writeChunk, sql/pgx adapters
-│   │   ├── partwriter.go      # partitionKey, rowToMap, partitioned Parquet writer, storeParts
-│   │   ├── queries.go         # SQL text for both engines (bound arguments)
+│   │   ├── chunking.go        # chunkKind/chunkPlan, planners, runChunks, shared archiveTable (DuckDB COPY per chunk)
+│   │   ├── queries.go         # Native SQL text for both engines (literal bounds; DuckDB passes it through)
 │   │   ├── partition.go       # timeValue, firstTimeColumn
 │   │   ├── manifest.go        # Manifest/TableEntry/FileEntry, index.json read/write, backup dir rules
 │   │   ├── local.go           # ListBackups, DeleteBackup, ResolveBackupDir
 │   │   ├── options.go         # ArchiveOptions (ChunkSize, Workers, OutputDir, Where)
-│   │   ├── filestore.go       # FileStore interface + LocalFileStore
-│   │   └── utils.go           # Schema inference, value sanitizing, ProgressTracker
+│   │   └── utils.go           # ProgressTracker, NormalizeMySQLDSN
 │   ├── dbutil/                # Shared SQL helpers: identifier quoting, time parsing, DB name from DSN
 │   ├── query/
 │   │   └── duck.go            # Run: DuckDB in-memory view over the backup's Parquet files
@@ -76,17 +74,15 @@ go build -o coldplane      # cgo must be enabled (DuckDB); no extra libraries ne
 - **cobra** — CLI framework
 - **pgx/v5** — PostgreSQL driver (archive, analyze); **lib/pq** is test-only seeding
 - **go-sql-driver/mysql** — MySQL driver
-- **go-duckdb** — DuckDB for Parquet querying (cgo)
-- **parquet-go** — Parquet writing
+- **go-duckdb** — DuckDB (cgo): extraction through the postgres/mysql extensions, Parquet writing via COPY, and querying
 - **fatih/color**, **go-pretty** — Terminal output
 
 ## Code Conventions
 
 - Standard Go formatting (`gofmt`); PascalCase exported, camelCase unexported; lowercase single-word packages.
 - Wrap errors with context: `fmt.Errorf("action failed: %w", err)`.
-- `FileStore` interface decouples where Parquet files land. Only `LocalFileStore` exists today; keep the interface so an S3-compatible store can be added.
-- Engines differ only in `chunkRunner`, the chunk-column detector and the planners; everything after a `chunkPlan` is shared (`archiveTable` -> `writeChunk` -> `partitionedWriter`). Keep it that way when adding an engine.
-- Parquet column types come from driver metadata (`colKind`) first and the first value second. A new backup refuses to reuse an existing backup directory; a failed one is removed.
+- Extraction: native drivers detect the chunk column and plan ranges; each chunk is native SQL that DuckDB runs on the source through `postgres_query`/`mysql_query` and writes with `COPY ... (FORMAT parquet, PARTITION_BY (year, month))`. Engines differ only in detection and planners; `archiveTable` is shared. Extensions download on first use (`COLDPLANE_DUCKDB_EXTENSIONS` overrides the directory).
+- Types in the archive are DuckDB's mapping of the source types. A new backup refuses to reuse an existing backup directory; a failed one is removed. The manifest records per table its columns, chunk kind and column, and row count, and per backup the `--where` used, for verify/purge/restore.
 - Progress tracking via the mutex-guarded `ProgressTracker`; worker pools and channel streaming for chunked reads.
 - All long-running operations accept `context.Context`.
 - Keep PostgreSQL and MySQL implementations in parity when changing one.

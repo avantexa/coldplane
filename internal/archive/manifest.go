@@ -1,12 +1,16 @@
 package archive
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path"
 	"path/filepath"
 	"time"
+
+	"github.com/avantexa/coldplane/internal/duck"
 )
 
 // FileEntry is one Parquet file of a backup, keyed relative to the backup directory.
@@ -21,6 +25,10 @@ type TableEntry struct {
 	PartitionColumn *string     `json:"partition_column"`
 	Files           []FileEntry `json:"files"`
 	SizeBytes       int64       `json:"size_bytes"`
+	RowCount        int64       `json:"row_count"`
+	Columns         []string    `json:"columns,omitempty"`      // source column order
+	ChunkKind       string      `json:"chunk_kind,omitempty"`   // id, time or offset
+	ChunkColumn     string      `json:"chunk_column,omitempty"` // key or timestamp the chunks ranged over
 }
 
 // Manifest is the content of a backup's index.json.
@@ -32,6 +40,8 @@ type Manifest struct {
 	Tables    []TableEntry `json:"tables"`
 	SizeBytes int64        `json:"size_bytes"`
 	Local     bool         `json:"local"`
+	Where     string       `json:"where,omitempty"`  // row filter the backup was taken with
+	Engine    string       `json:"engine,omitempty"` // extraction engine, "duckdb"
 }
 
 // TableNames lists the archived tables in manifest order.
@@ -76,7 +86,7 @@ func newTableEntry(table, partitionColumn string, files []FileEntry) TableEntry 
 
 // writeBackupManifest writes index.json for a finished backup and returns the
 // total size of its files.
-func writeBackupManifest(backupDir, name, dbType, dbName string, tables []TableEntry) (int64, error) {
+func writeBackupManifest(backupDir, name, dbType, dbName, where string, tables []TableEntry) (int64, error) {
 	if tables == nil {
 		tables = []TableEntry{}
 	}
@@ -87,6 +97,8 @@ func writeBackupManifest(backupDir, name, dbType, dbName string, tables []TableE
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		Tables:    tables,
 		Local:     true,
+		Where:     where,
+		Engine:    "duckdb",
 	}
 	for _, t := range tables {
 		m.SizeBytes += t.SizeBytes
@@ -140,4 +152,35 @@ func discardBackupDir(dir string) {
 	if err := os.RemoveAll(dir); err == nil {
 		fmt.Printf("Removed incomplete backup at %s\n", dir)
 	}
+}
+
+// srcAlias is the name the source database is attached under in DuckDB.
+const srcAlias = "src"
+
+// sourceColumns returns the table's column names in source order, as DuckDB sees them.
+func sourceColumns(ctx context.Context, eng *duck.Engine, kind duck.Kind, table string) ([]string, error) {
+	rows, err := eng.DB().QueryContext(ctx, duck.DescribeSQL(kind, srcAlias, table))
+	if err != nil {
+		return nil, fmt.Errorf("describe table %s: %w", table, err)
+	}
+	defer rows.Close()
+	var columns []string
+	for rows.Next() {
+		var name, typ, null, key, def, extra sql.NullString
+		if err := rows.Scan(&name, &typ, &null, &key, &def, &extra); err != nil {
+			return nil, fmt.Errorf("describe table %s: %w", table, err)
+		}
+		columns = append(columns, name.String)
+	}
+	return columns, rows.Err()
+}
+
+// tableEntry builds a table's manifest entry with its chunking provenance.
+func tableEntry(table, partitionColumn string, files []FileEntry, columns []string, kind chunkKind, chunkColumn string, rows int64) TableEntry {
+	e := newTableEntry(table, partitionColumn, files)
+	e.Columns = columns
+	e.ChunkKind = kind.String()
+	e.ChunkColumn = chunkColumn
+	e.RowCount = rows
+	return e
 }

@@ -4,9 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"github.com/avantexa/coldplane/internal/dbutil"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/avantexa/coldplane/internal/dbutil"
+	"github.com/avantexa/coldplane/internal/duck"
 
 	_ "github.com/go-sql-driver/mysql"
 )
@@ -23,7 +26,6 @@ func ArchiveMySQL(ctx context.Context, dsn string, tables []string, name string,
 			discardBackupDir(backupDir)
 		}
 	}()
-	store := &LocalFileStore{BaseDir: backupDir}
 
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -31,16 +33,26 @@ func ArchiveMySQL(ctx context.Context, dsn string, tables []string, name string,
 	}
 	defer db.Close()
 
+	eng, err := duck.Open(ctx)
+	if err != nil {
+		return fmt.Errorf("[archive-mysql] %w", err)
+	}
+	defer eng.Close()
+	kind, err := eng.Attach(ctx, dsn, srcAlias, true)
+	if err != nil {
+		return fmt.Errorf("[archive-mysql] %w", err)
+	}
+
 	var manifestTables []TableEntry
 	for _, table := range tables {
-		files, partCol, err := archiveMySQLTable(ctx, db, store, table, opts.Where, opts)
+		entry, err := archiveMySQLTable(ctx, db, eng, kind, table, backupDir, opts)
 		if err != nil {
 			return fmt.Errorf("[archive-mysql] failed to archive table %s: %w", table, err)
 		}
-		manifestTables = append(manifestTables, newTableEntry(table, partCol, files))
+		manifestTables = append(manifestTables, entry)
 	}
 
-	total, err := writeBackupManifest(backupDir, name, "mysql", dbutil.DBNameFromDSN(dsn), manifestTables)
+	total, err := writeBackupManifest(backupDir, name, "mysql", dbutil.DBNameFromDSN(dsn), opts.Where, manifestTables)
 	if err != nil {
 		return fmt.Errorf("[archive-mysql] failed to write local manifest: %w", err)
 	}
@@ -48,49 +60,36 @@ func ArchiveMySQL(ctx context.Context, dsn string, tables []string, name string,
 	return nil
 }
 
-// archiveMySQLTable archives one table and returns its manifest entries and
-// the partition column it used.
-func archiveMySQLTable(ctx context.Context, db *sql.DB, store FileStore, table, where string, opts ArchiveOptions) ([]FileEntry, string, error) {
+// archiveMySQLTable archives one table and returns its manifest entry.
+func archiveMySQLTable(ctx context.Context, db *sql.DB, eng *duck.Engine, kind duck.Kind, table, backupDir string, opts ArchiveOptions) (TableEntry, error) {
 	progress := &ProgressTracker{Table: table}
 
-	kind, column, err := mysqlChunkColumn(db, table)
+	columns, err := sourceColumns(ctx, eng, kind, table)
 	if err != nil {
-		return nil, "", fmt.Errorf("[archive-mysql] failed to detect chunk column: %w", err)
+		return TableEntry{}, err
+	}
+	chunkKind, column, err := mysqlChunkColumn(db, table)
+	if err != nil {
+		return TableEntry{}, fmt.Errorf("failed to detect chunk column: %w", err)
 	}
 	// The time column we chunk on is also the natural partition column.
 	partitionColumn := column
-	if kind != chunkByTime {
+	if chunkKind != chunkByTime {
 		partitionColumn = mysqlPartitionColumn(db, table)
 	}
-	if partitionColumn == "" && kind == chunkByOffset {
+	if partitionColumn == "" && chunkKind == chunkByOffset {
 		partitionColumn = detectMySQLDatetimeColumn(db, table)
 	}
 
-	plan, err := mysqlChunkPlan(db, table, where, kind, column, opts.ChunkSize, progress)
+	plan, err := mysqlChunkPlan(db, table, opts.Where, chunkKind, column, opts.ChunkSize, progress)
 	if err != nil {
-		return nil, partitionColumn, err
+		return TableEntry{}, err
 	}
-	entries, err := archiveTable(ctx, mysqlRunner(db), store, table, partitionColumn, plan, opts.Workers, progress)
-	return entries, partitionColumn, err
-}
-
-// mysqlRunner executes chunk queries on db.
-func mysqlRunner(db *sql.DB) chunkRunner {
-	return func(ctx context.Context, query string, args []interface{}) (rowSource, func(), error) {
-		rows, err := db.QueryContext(ctx, query, args...)
-		if err != nil {
-			return nil, nil, fmt.Errorf("query error: %w", err)
-		}
-		src, err := newSQLRowSource(rows)
-		if err != nil {
-			rows.Close()
-			return nil, nil, err
-		}
-		if debug {
-			fmt.Printf("[DEBUG] Detected columns: %v\n", src.columns)
-		}
-		return src, func() { rows.Close() }, nil
+	files, err := archiveTable(ctx, eng, kind, srcAlias, backupDir, table, partitionColumn, plan, opts.Workers, progress)
+	if err != nil {
+		return TableEntry{}, err
 	}
+	return tableEntry(table, partitionColumn, files, columns, chunkKind, column, progress.DoneRows), nil
 }
 
 // mysqlChunkPlan plans the chunks for the detected strategy.
@@ -177,9 +176,8 @@ func mysqlIDChunks(db *sql.DB, table, where, idColumn string, chunkSize int, pro
 	progress.TotalRows = maxID.Int64 - minID.Int64 + 1
 	progress.TotalChunks = len(ranges)
 	fmt.Printf("[archive-mysql] Using %q for chunking (min: %d, max: %d)\n", idColumn, minID.Int64, maxID.Int64)
-	sel := mysqlRangeQuery(table, where, idColumn)
-	return chunkPlan{n: len(ranges), query: func(i int) (string, []interface{}) {
-		return sel, []interface{}{ranges[i].Start, ranges[i].End}
+	return chunkPlan{n: len(ranges), query: func(i int) string {
+		return mysqlRangeQuery(table, where, idColumn, strconv.FormatInt(ranges[i].Start, 10), strconv.FormatInt(ranges[i].End, 10))
 	}}, nil
 }
 
@@ -208,9 +206,8 @@ func mysqlTimeChunks(db *sql.DB, table, where, timeColumn string, progress *Prog
 	progress.TotalChunks = len(ranges)
 	fmt.Printf("[archive-mysql] Using %q for time chunking (min: %s, max: %s) with window %s (%d chunks expected)\n",
 		timeColumn, minTime.Format(time.RFC3339), maxTime.Format(time.RFC3339), window, len(ranges))
-	sel := mysqlRangeQuery(table, where, timeColumn)
-	return chunkPlan{n: len(ranges), query: func(i int) (string, []interface{}) {
-		return sel, []interface{}{ranges[i].Start.Format(mysqlTimeLayout), ranges[i].End.Format(mysqlTimeLayout)}
+	return chunkPlan{n: len(ranges), query: func(i int) string {
+		return mysqlRangeQuery(table, where, timeColumn, sqlString(ranges[i].Start.Format(mysqlTimeLayout)), sqlString(ranges[i].End.Format(mysqlTimeLayout)))
 	}}, nil
 }
 
@@ -225,9 +222,8 @@ func mysqlOffsetChunks(db *sql.DB, table, where string, chunkSize int, progress 
 	pages := planOffsetChunks(totalRows, chunkSize)
 	progress.TotalRows = int64(totalRows)
 	progress.TotalChunks = len(pages)
-	sel := mysqlOffsetQuery(table, where)
-	return chunkPlan{n: len(pages), query: func(i int) (string, []interface{}) {
-		return sel, []interface{}{pages[i].Limit, pages[i].Offset}
+	return chunkPlan{n: len(pages), query: func(i int) string {
+		return mysqlOffsetQuery(table, where, pages[i].Limit, pages[i].Offset)
 	}}, nil
 }
 
