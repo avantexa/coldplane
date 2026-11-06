@@ -16,7 +16,7 @@ import (
 )
 
 // archivePostgresTable handles chunking, processing, and storing for a single table.
-func archivePostgresTable(ctx context.Context, pool *pgxpool.Pool, store FileStore, table, where string, opts ArchiveOptions) ([]map[string]interface{}, string, error) {
+func archivePostgresTable(ctx context.Context, pool *pgxpool.Pool, store FileStore, table, where string, opts ArchiveOptions) ([]FileEntry, string, error) {
 	progress := &ProgressTracker{Table: table}
 
 	conn, err := pool.Acquire(ctx)
@@ -33,7 +33,7 @@ func archivePostgresTable(ctx context.Context, pool *pgxpool.Pool, store FileSto
 	}
 
 	var entriesMu sync.Mutex
-	var entries []map[string]interface{}
+	var entries []FileEntry
 	err = runChunks(n, opts.Workers, func(i int) error {
 		dbConn, err := pool.Acquire(ctx)
 		if err != nil {
@@ -182,13 +182,13 @@ func ArchivePostgres(ctx context.Context, dbURL string, tables []string, name st
 	}
 	defer pool.Close()
 
-	var manifestTables []map[string]interface{}
+	var manifestTables []TableEntry
 	for _, table := range tables {
 		files, partCol, err := archivePostgresTable(ctx, pool, store, table, opts.Where, opts)
 		if err != nil {
 			return fmt.Errorf("[archive-postgres] failed to archive table %s: %w", table, err)
 		}
-		manifestTables = append(manifestTables, tableManifest(table, partCol, files))
+		manifestTables = append(manifestTables, newTableEntry(table, partCol, files))
 	}
 
 	total, err := writeBackupManifest(backupDir, name, "postgres", dbutil.DBNameFromDSN(dbURL), manifestTables)
@@ -200,7 +200,7 @@ func ArchivePostgres(ctx context.Context, dbURL string, tables []string, name st
 }
 
 // processPostgresChunkGeneric runs one chunk query and archives its rows.
-func processPostgresChunkGeneric(ctx context.Context, conn *pgx.Conn, query string, args []interface{}, table string, chunkNum int, partitionColumn string, store FileStore, progress *ProgressTracker) ([]map[string]interface{}, error) {
+func processPostgresChunkGeneric(ctx context.Context, conn *pgx.Conn, query string, args []interface{}, table string, chunkNum int, partitionColumn string, store FileStore, progress *ProgressTracker) ([]FileEntry, error) {
 	rows, err := conn.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query error: %w", err)

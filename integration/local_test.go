@@ -98,14 +98,8 @@ func TestLocalPostgresFlow(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ReadLocalManifest: %v", err)
 		}
-		if manifest["name"] != backupName {
-			t.Errorf("manifest name = %v, want %q", manifest["name"], backupName)
-		}
-		if manifest["db_type"] != "postgres" {
-			t.Errorf("manifest db_type = %v, want 'postgres'", manifest["db_type"])
-		}
-		if manifest["local"] != true {
-			t.Errorf("manifest local = %v, want true", manifest["local"])
+		if manifest.Name != backupName || manifest.DBType != "postgres" || !manifest.Local {
+			t.Errorf("manifest = %+v, want name %q, postgres, local", manifest, backupName)
 		}
 	})
 

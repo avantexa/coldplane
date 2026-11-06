@@ -25,13 +25,13 @@ func ArchiveMySQL(ctx context.Context, dsn string, tables []string, name string,
 	}
 	defer db.Close()
 
-	var manifestTables []map[string]interface{}
+	var manifestTables []TableEntry
 	for _, table := range tables {
 		files, partCol, err := archiveTable(ctx, db, store, table, opts.Where, opts)
 		if err != nil {
 			return fmt.Errorf("[archive-mysql] failed to archive table %s: %w", table, err)
 		}
-		manifestTables = append(manifestTables, tableManifest(table, partCol, files))
+		manifestTables = append(manifestTables, newTableEntry(table, partCol, files))
 	}
 
 	total, err := writeBackupManifest(backupDir, name, "mysql", dbutil.DBNameFromDSN(dsn), manifestTables)
@@ -43,7 +43,7 @@ func ArchiveMySQL(ctx context.Context, dsn string, tables []string, name string,
 }
 
 // archiveTable handles chunking, processing, and storing for a single table.
-func archiveTable(ctx context.Context, db *sql.DB, store FileStore, table, where string, opts ArchiveOptions) ([]map[string]interface{}, string, error) {
+func archiveTable(ctx context.Context, db *sql.DB, store FileStore, table, where string, opts ArchiveOptions) ([]FileEntry, string, error) {
 	progress := &ProgressTracker{Table: table}
 	partitionColumnUsed := mysqlPartitionColumn(db, table)
 
@@ -53,7 +53,7 @@ func archiveTable(ctx context.Context, db *sql.DB, store FileStore, table, where
 	}
 
 	var entriesMu sync.Mutex
-	var entries []map[string]interface{}
+	var entries []FileEntry
 	err = runChunks(n, opts.Workers, func(i int) error {
 		got, err := processMySQLChunkGeneric(ctx, db, query(i), table, i, partitionColumnUsed, store, progress)
 		if err != nil {
@@ -216,7 +216,7 @@ func mysqlOffsetChunks(db *sql.DB, table, where string, chunkSize int, progress 
 }
 
 // processMySQLChunkGeneric runs one chunk query and archives its rows.
-func processMySQLChunkGeneric(ctx context.Context, db *sql.DB, query, table string, chunkNum int, partitionColumn string, store FileStore, progress *ProgressTracker) ([]map[string]interface{}, error) {
+func processMySQLChunkGeneric(ctx context.Context, db *sql.DB, query, table string, chunkNum int, partitionColumn string, store FileStore, progress *ProgressTracker) ([]FileEntry, error) {
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query error: %w", err)

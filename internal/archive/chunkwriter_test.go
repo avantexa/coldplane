@@ -51,7 +51,7 @@ func TestWriteChunk(t *testing.T) {
 			t.Fatalf("3 rows in 3 months should give 3 files, got %d", len(entries))
 		}
 		for _, e := range entries {
-			key := e["key"].(string)
+			key := e.Key
 			if !strings.HasPrefix(key, "events/year=2024/month=") || !strings.HasSuffix(key, "events-chunk-7-part-0.parquet") {
 				t.Errorf("unexpected key %s", key)
 			}
@@ -100,7 +100,7 @@ func TestWriteChunk(t *testing.T) {
 
 	t.Run("unknown partition column lands in the unknown partition", func(t *testing.T) {
 		entries, err := writeChunk(ctx, eventRows(2), "t", 1, "nope", &LocalFileStore{BaseDir: t.TempDir()}, &ProgressTracker{})
-		if err != nil || len(entries) != 1 || !strings.Contains(entries[0]["key"].(string), unknownPartition) {
+		if err != nil || len(entries) != 1 || !strings.Contains(entries[0].Key, unknownPartition) {
 			t.Errorf("got %v, %v", entries, err)
 		}
 	})

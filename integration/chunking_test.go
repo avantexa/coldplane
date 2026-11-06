@@ -121,55 +121,50 @@ func testChunkingStrategies(t *testing.T, run func(ctx context.Context, name str
 	if err != nil {
 		t.Fatalf("manifest: %v", err)
 	}
-	for _, tb := range nothing["tables"].([]interface{}) {
-		m := tb.(map[string]interface{})
-		if n := len(m["files"].([]interface{})); n != 0 {
-			t.Errorf("%v: expected no files, got %d", m["name"], n)
+	for _, tb := range nothing.Tables {
+		if len(tb.Files) != 0 {
+			t.Errorf("%s: expected no files, got %d", tb.Name, len(tb.Files))
 		}
 	}
-	if nothing["size_bytes"].(float64) != 0 {
-		t.Errorf("empty backup size = %v", nothing["size_bytes"])
+	if nothing.SizeBytes != 0 {
+		t.Errorf("empty backup size = %d", nothing.SizeBytes)
 	}
 
 	manifest, err := archive.ReadLocalManifest(filepath.Join(backupDir, "chunking"))
 	if err != nil {
 		t.Fatalf("manifest: %v", err)
 	}
-	if manifest["db_type"] != dbType {
-		t.Errorf("db_type = %v", manifest["db_type"])
+	if manifest.DBType != dbType {
+		t.Errorf("db_type = %q", manifest.DBType)
 	}
-	for _, tb := range manifest["tables"].([]interface{}) {
-		m := tb.(map[string]interface{})
+	for _, m := range manifest.Tables {
 		// ids 3..75 in PK chunks of 10 -> 8 ranges, each with rows -> 8 files.
 		// OFFSET/LIMIT would produce only 3, so this pins the strategy.
-		if m["name"] == "inttest_ids" {
-			if n := len(m["files"].([]interface{})); n != 8 {
-				t.Errorf("inttest_ids: %d files, want 8 (PK chunking)", n)
-			}
+		if m.Name == "inttest_ids" && len(m.Files) != 8 {
+			t.Errorf("inttest_ids: %d files, want 8 (PK chunking)", len(m.Files))
 		}
-		switch m["name"] {
+		switch m.Name {
 		case "inttest_events":
-			if m["partition_column"] != "happened_at" {
-				t.Errorf("inttest_events: partition_column = %v, want happened_at", m["partition_column"])
+			if m.PartitionColumn == nil || *m.PartitionColumn != "happened_at" {
+				t.Errorf("inttest_events: partition_column = %v, want happened_at", m.PartitionColumn)
 			}
 			// 12 monthly rows over 334 days in 30-day windows -> about a dozen
 			// chunk numbers (a window can hold two rows or none). OFFSET/LIMIT
 			// with ChunkSize=10 would use only chunks 0 and 1.
 			chunks := map[string]bool{}
-			for _, f := range m["files"].([]interface{}) {
-				key := f.(map[string]interface{})["key"].(string)
-				chunks[regexp.MustCompile(`-chunk-(\d+)-`).FindStringSubmatch(key)[1]] = true
+			for _, f := range m.Files {
+				chunks[regexp.MustCompile(`-chunk-(\d+)-`).FindStringSubmatch(f.Key)[1]] = true
 			}
 			if len(chunks) < 10 {
 				t.Errorf("inttest_events: %d distinct chunks, want at least 10 (time chunking)", len(chunks))
 			}
 		default:
-			if m["partition_column"] != nil {
-				t.Errorf("%v: expected no partition column, got %v", m["name"], m["partition_column"])
+			if m.PartitionColumn != nil {
+				t.Errorf("%s: expected no partition column, got %q", m.Name, *m.PartitionColumn)
 			}
 		}
-		if m["size_bytes"].(float64) <= 0 {
-			t.Errorf("%v: size_bytes should be positive", m["name"])
+		if m.SizeBytes <= 0 {
+			t.Errorf("%s: size_bytes should be positive", m.Name)
 		}
 	}
 }

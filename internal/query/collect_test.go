@@ -1,6 +1,7 @@
 package query
 
 import (
+	"github.com/avantexa/coldplane/internal/archive"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,28 +23,18 @@ func TestCollectLocalParquetFiles_ManifestWinsOverDisk(t *testing.T) {
 	listed := filepath.Join(dir, "orders", "year=2025", "orders-chunk-0-part-0.parquet")
 	touch(t, listed)
 	touch(t, filepath.Join(dir, "orders", "year=2025", "stray.parquet"))
-	manifest := map[string]interface{}{
-		"tables": []interface{}{
-			map[string]interface{}{
-				"name": "orders",
-				"files": []interface{}{
-					map[string]interface{}{"key": "orders/year=2025/orders-chunk-0-part-0.parquet"},
-					map[string]interface{}{"key": "orders/year=2025/missing.parquet"},
-					map[string]interface{}{"nokey": true},
-					"not a map",
-				},
-			},
-			"not a table map",
+	manifest := archive.Manifest{Tables: []archive.TableEntry{{
+		Name: "orders",
+		Files: []archive.FileEntry{
+			{Key: "orders/year=2025/orders-chunk-0-part-0.parquet"},
+			{Key: "orders/year=2025/missing.parquet"},
 		},
-	}
-	files, err := collectLocalParquetFiles(dir, manifest, "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	}}}
+	files := collectLocalParquetFiles(dir, manifest, "")
 	if len(files) != 1 || files[0] != listed {
 		t.Errorf("manifest files that exist should win over the directory walk, got %v", files)
 	}
-	files, _ = collectLocalParquetFiles(dir, manifest, "orders")
+	files = collectLocalParquetFiles(dir, manifest, "orders")
 	if len(files) != 1 || files[0] != listed {
 		t.Errorf("filtered by table: %v", files)
 	}
@@ -54,18 +45,12 @@ func TestCollectLocalParquetFiles_WalkIsScopedToTable(t *testing.T) {
 	touch(t, filepath.Join(dir, "events", "year=2025", "a.parquet"))
 	touch(t, filepath.Join(dir, "events", "year=2025", "notes.txt"))
 	touch(t, filepath.Join(dir, "other", "year=2025", "b.parquet"))
-	manifest := map[string]interface{}{"tables": []interface{}{
-		map[string]interface{}{"name": "events", "files": []interface{}{}},
-		map[string]interface{}{"name": "other", "files": []interface{}{}},
-	}}
-	files, err := collectLocalParquetFiles(dir, manifest, "events")
-	if err != nil {
-		t.Fatal(err)
-	}
+	manifest := archive.Manifest{Tables: []archive.TableEntry{{Name: "events"}, {Name: "other"}}}
+	files := collectLocalParquetFiles(dir, manifest, "events")
 	if len(files) != 1 || !strings.HasSuffix(files[0], "a.parquet") {
 		t.Errorf("walk for one table should only find its parquet files, got %v", files)
 	}
-	all, _ := collectLocalParquetFiles(dir, manifest, "")
+	all := collectLocalParquetFiles(dir, manifest, "")
 	if len(all) != 2 {
 		t.Errorf("walk for all tables: %v", all)
 	}

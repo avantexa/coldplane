@@ -175,7 +175,7 @@ func (w *partitionedWriter) discard() {
 // storeParts moves finished partition files into the store under
 // <table>/<partition>/<table>-chunk-<n>-part-0.parquet, up to four at a
 // time, and returns the manifest entries for the stored files.
-func storeParts(ctx context.Context, store FileStore, table string, chunkNum int, parts map[string]string, rowCount int) ([]map[string]interface{}, error) {
+func storeParts(ctx context.Context, store FileStore, table string, chunkNum int, parts map[string]string, rowCount int) ([]FileEntry, error) {
 	type item struct{ key, path string }
 	var items []item
 	for partition, filePath := range parts {
@@ -183,14 +183,14 @@ func storeParts(ctx context.Context, store FileStore, table string, chunkNum int
 		items = append(items, item{path.Join(table, partition, name), filePath})
 	}
 
-	entries := make([]map[string]interface{}, len(items))
+	entries := make([]FileEntry, len(items))
 	err := runChunks(len(items), 4, func(i int) error {
 		size, err := store.StoreFile(ctx, items[i].key, items[i].path)
 		if err != nil {
 			os.Remove(items[i].path)
 			return fmt.Errorf("store failed for %s: %w", items[i].key, err)
 		}
-		entries[i] = map[string]interface{}{"key": items[i].key, "size_bytes": size}
+		entries[i] = FileEntry{Key: items[i].key, SizeBytes: size}
 		fmt.Printf("[%s] [worker %d] Stored chunk (%d rows, %.2f MB)\n", table, chunkNum, rowCount, float64(size)/1024/1024)
 		return nil
 	})
@@ -202,7 +202,7 @@ func storeParts(ctx context.Context, store FileStore, table string, chunkNum int
 
 // storeChunk finalizes a chunk's writer and stores its files. A nil writer
 // means the chunk had no rows.
-func storeChunk(ctx context.Context, store FileStore, w *partitionedWriter, table string, chunkNum, rowCount int) ([]map[string]interface{}, error) {
+func storeChunk(ctx context.Context, store FileStore, w *partitionedWriter, table string, chunkNum, rowCount int) ([]FileEntry, error) {
 	if w == nil {
 		return nil, nil
 	}

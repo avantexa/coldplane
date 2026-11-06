@@ -115,11 +115,11 @@ func TestPartitionedWriter_WriteFinishStore(t *testing.T) {
 		t.Fatalf("got %d entries, want 2", len(entries))
 	}
 	for _, e := range entries {
-		key := e["key"].(string)
+		key := e.Key
 		if _, err := os.Stat(filepath.Join(dest, filepath.FromSlash(key))); err != nil {
 			t.Errorf("stored file missing for key %s: %v", key, err)
 		}
-		if e["size_bytes"].(int64) <= 0 {
+		if e.SizeBytes <= 0 {
 			t.Errorf("size for %s should be positive", key)
 		}
 		want1 := "orders/year=2025/month=01/orders-chunk-3-part-0.parquet"

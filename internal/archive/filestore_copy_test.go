@@ -32,10 +32,9 @@ func TestMoveByCopy(t *testing.T) {
 }
 
 func TestBackupInfoFromManifest(t *testing.T) {
-	m := map[string]interface{}{
-		"name": "", "db_type": "mysql", "db_name": "shop", "created_at": "2025-01-01T00:00:00Z",
-		"size_bytes": float64(2048),
-		"tables":     []interface{}{map[string]interface{}{"name": "orders"}, map[string]interface{}{"name": "items"}, "junk"},
+	m := Manifest{
+		DBType: "mysql", DBName: "shop", CreatedAt: "2025-01-01T00:00:00Z", SizeBytes: 2048,
+		Tables: []TableEntry{{Name: "orders"}, {Name: "items"}},
 	}
 	info := backupInfoFromManifest(m, "/backups/orders_20250101")
 	if info.Name != "orders_20250101" {

@@ -1,9 +1,47 @@
 package archive
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
 	"path"
+	"path/filepath"
 	"time"
 )
+
+// FileEntry is one Parquet file of a backup, keyed relative to the backup directory.
+type FileEntry struct {
+	Key       string `json:"key"`
+	SizeBytes int64  `json:"size_bytes"`
+}
+
+// TableEntry describes one archived table.
+type TableEntry struct {
+	Name            string      `json:"name"`
+	PartitionColumn *string     `json:"partition_column"`
+	Files           []FileEntry `json:"files"`
+	SizeBytes       int64       `json:"size_bytes"`
+}
+
+// Manifest is the content of a backup's index.json.
+type Manifest struct {
+	Name      string       `json:"name"`
+	DBType    string       `json:"db_type"`
+	DBName    string       `json:"db_name"`
+	CreatedAt string       `json:"created_at"`
+	Tables    []TableEntry `json:"tables"`
+	SizeBytes int64        `json:"size_bytes"`
+	Local     bool         `json:"local"`
+}
+
+// TableNames lists the archived tables in manifest order.
+func (m Manifest) TableNames() []string {
+	names := make([]string, 0, len(m.Tables))
+	for _, t := range m.Tables {
+		names = append(names, t.Name)
+	}
+	return names
+}
 
 // backupDirFor returns the directory a named backup is written to.
 func backupDirFor(opts ArchiveOptions, name string) string {
@@ -14,60 +52,72 @@ func backupDirFor(opts ArchiveOptions, name string) string {
 	return path.Join(baseDir, name)
 }
 
-// sumSizes adds up the size_bytes of manifest file entries, tolerating the
-// numeric types a JSON round trip can produce.
-func sumSizes(files []map[string]interface{}) int64 {
+// sumSizes adds up the sizes of file entries.
+func sumSizes(files []FileEntry) int64 {
 	var total int64
 	for _, f := range files {
-		switch v := f["size_bytes"].(type) {
-		case int64:
-			total += v
-		case int:
-			total += int64(v)
-		case float64:
-			total += int64(v)
-		}
+		total += f.SizeBytes
 	}
 	return total
 }
 
-// tableManifest builds the manifest entry for one archived table.
-func tableManifest(table, partitionColumn string, files []map[string]interface{}) map[string]interface{} {
-	var partCol interface{}
+// newTableEntry builds the manifest entry for one archived table. An empty
+// partition column is recorded as null and no files as an empty list.
+func newTableEntry(table, partitionColumn string, files []FileEntry) TableEntry {
+	var partCol *string
 	if partitionColumn != "" {
-		partCol = partitionColumn
+		partCol = &partitionColumn
 	}
 	if files == nil {
-		files = []map[string]interface{}{} // an empty table lists [] in index.json, not null
+		files = []FileEntry{}
 	}
-	return map[string]interface{}{
-		"name":             table,
-		"partition_column": partCol,
-		"files":            files,
-		"size_bytes":       sumSizes(files),
-	}
+	return TableEntry{Name: table, PartitionColumn: partCol, Files: files, SizeBytes: sumSizes(files)}
 }
 
 // writeBackupManifest writes index.json for a finished backup and returns the
 // total size of its files.
-func writeBackupManifest(backupDir, name, dbType, dbName string, tables []map[string]interface{}) (int64, error) {
-	var total int64
+func writeBackupManifest(backupDir, name, dbType, dbName string, tables []TableEntry) (int64, error) {
+	if tables == nil {
+		tables = []TableEntry{}
+	}
+	m := Manifest{
+		Name:      name,
+		DBType:    dbType,
+		DBName:    dbName,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		Tables:    tables,
+		Local:     true,
+	}
 	for _, t := range tables {
-		if files, ok := t["files"].([]map[string]interface{}); ok {
-			total += sumSizes(files)
-		}
+		m.SizeBytes += t.SizeBytes
 	}
-	manifest := map[string]interface{}{
-		"name":       name,
-		"db_type":    dbType,
-		"db_name":    dbName,
-		"created_at": time.Now().UTC().Format(time.RFC3339),
-		"tables":     tables,
-		"size_bytes": total,
-		"local":      true,
-	}
-	if err := writeLocalManifest(backupDir, manifest); err != nil {
+	if err := writeManifest(backupDir, m); err != nil {
 		return 0, err
 	}
-	return total, nil
+	return m.SizeBytes, nil
+}
+
+// writeManifest serializes m as index.json in backupDir, creating the directory.
+func writeManifest(backupDir string, m Manifest) error {
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		return fmt.Errorf("create backup dir: %w", err)
+	}
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal manifest: %w", err)
+	}
+	return os.WriteFile(filepath.Join(backupDir, "index.json"), data, 0644)
+}
+
+// ReadLocalManifest reads and parses the index.json of a backup directory.
+func ReadLocalManifest(backupDir string) (Manifest, error) {
+	data, err := os.ReadFile(filepath.Join(backupDir, "index.json"))
+	if err != nil {
+		return Manifest{}, fmt.Errorf("read manifest: %w", err)
+	}
+	var m Manifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return Manifest{}, fmt.Errorf("parse manifest: %w", err)
+	}
+	return m, nil
 }

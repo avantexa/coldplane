@@ -1,7 +1,6 @@
 package archive
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,18 +14,6 @@ func defaultLocalBackupDir() string {
 		return ".coldplane/backups"
 	}
 	return filepath.Join(home, ".coldplane", "backups")
-}
-
-// writeLocalManifest writes an index.json manifest to a local backup directory.
-func writeLocalManifest(backupDir string, manifest map[string]interface{}) error {
-	if err := os.MkdirAll(backupDir, 0755); err != nil {
-		return fmt.Errorf("create backup dir: %w", err)
-	}
-	data, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal manifest: %w", err)
-	}
-	return os.WriteFile(filepath.Join(backupDir, "index.json"), data, 0644)
 }
 
 // LocalBackupInfo holds metadata about a local backup, read from its index.json.
@@ -59,18 +46,12 @@ func ListLocalBackups(baseDir string) ([]LocalBackupInfo, error) {
 		if !entry.IsDir() {
 			continue
 		}
-		manifestPath := filepath.Join(baseDir, entry.Name(), "index.json")
-		data, err := os.ReadFile(manifestPath)
+		dir := filepath.Join(baseDir, entry.Name())
+		manifest, err := ReadLocalManifest(dir)
 		if err != nil {
-			continue // skip dirs without index.json
+			continue // not a backup, or an unreadable one
 		}
-
-		var manifest map[string]interface{}
-		if err := json.Unmarshal(data, &manifest); err != nil {
-			continue
-		}
-		info := backupInfoFromManifest(manifest, filepath.Join(baseDir, entry.Name()))
-		backups = append(backups, info)
+		backups = append(backups, backupInfoFromManifest(manifest, dir))
 	}
 
 	sort.Slice(backups, func(i, j int) bool {
@@ -81,43 +62,20 @@ func ListLocalBackups(baseDir string) ([]LocalBackupInfo, error) {
 
 // backupInfoFromManifest summarizes a parsed index.json; the directory name
 // stands in when the manifest has no name.
-func backupInfoFromManifest(manifest map[string]interface{}, dir string) LocalBackupInfo {
+func backupInfoFromManifest(m Manifest, dir string) LocalBackupInfo {
 	info := LocalBackupInfo{
-		Name:      getString(manifest, "name"),
+		Name:      m.Name,
 		Path:      dir,
-		DBType:    getString(manifest, "db_type"),
-		DBName:    getString(manifest, "db_name"),
-		CreatedAt: getString(manifest, "created_at"),
+		DBType:    m.DBType,
+		DBName:    m.DBName,
+		CreatedAt: m.CreatedAt,
+		SizeBytes: m.SizeBytes,
+		Tables:    m.TableNames(),
 	}
 	if info.Name == "" {
 		info.Name = filepath.Base(dir)
 	}
-	if sz, ok := manifest["size_bytes"].(float64); ok {
-		info.SizeBytes = int64(sz)
-	}
-	if tables, ok := manifest["tables"].([]interface{}); ok {
-		for _, t := range tables {
-			if tMap, ok := t.(map[string]interface{}); ok {
-				if name, ok := tMap["name"].(string); ok {
-					info.Tables = append(info.Tables, name)
-				}
-			}
-		}
-	}
 	return info
-}
-
-// ReadLocalManifest reads and parses the index.json from a local backup directory.
-func ReadLocalManifest(backupDir string) (map[string]interface{}, error) {
-	data, err := os.ReadFile(filepath.Join(backupDir, "index.json"))
-	if err != nil {
-		return nil, fmt.Errorf("read manifest: %w", err)
-	}
-	var manifest map[string]interface{}
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		return nil, fmt.Errorf("parse manifest: %w", err)
-	}
-	return manifest, nil
 }
 
 // ResolveLocalBackupDir resolves a backup name or path to the backup directory.
@@ -143,11 +101,4 @@ func DeleteLocalBackup(nameOrPath string) error {
 	}
 	fmt.Printf("Deleted local backup: %s\n", dir)
 	return nil
-}
-
-func getString(m map[string]interface{}, key string) string {
-	if v, ok := m[key].(string); ok {
-		return v
-	}
-	return ""
 }

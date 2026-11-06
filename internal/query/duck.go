@@ -36,10 +36,7 @@ func RunLocal(ctx context.Context, backupNameOrPath string, opts QueryOptions) e
 		return fmt.Errorf("local backup %q: %w. Run 'coldplane backup list' to see available backups", backupNameOrPath, err)
 	}
 
-	parquetFiles, err := collectLocalParquetFiles(backupDir, manifest, opts.Table)
-	if err != nil {
-		return err
-	}
+	parquetFiles := collectLocalParquetFiles(backupDir, manifest, opts.Table)
 	if len(parquetFiles) == 0 {
 		return noFilesError(backupNameOrPath, opts.Table)
 	}
@@ -125,12 +122,8 @@ func queryRows(ctx context.Context, db *sql.DB, sqlText string) ([]map[string]in
 // collectLocalParquetFiles returns the backup's Parquet files, optionally
 // limited to one table: the manifest's files when they exist on disk, else
 // whatever .parquet files a directory walk finds.
-func collectLocalParquetFiles(backupDir string, manifest map[string]interface{}, tableName string) ([]string, error) {
-	tables, ok := manifest["tables"].([]interface{})
-	if !ok {
-		return nil, fmt.Errorf("manifest missing tables array")
-	}
-	files := manifestParquetFiles(backupDir, tables, tableName)
+func collectLocalParquetFiles(backupDir string, manifest archive.Manifest, tableName string) []string {
+	files := manifestParquetFiles(backupDir, manifest.Tables, tableName)
 	if len(files) == 0 {
 		searchDir := backupDir
 		if tableName != "" {
@@ -138,28 +131,18 @@ func collectLocalParquetFiles(backupDir string, manifest map[string]interface{},
 		}
 		files = walkParquetFiles(searchDir)
 	}
-	return files, nil
+	return files
 }
 
 // manifestParquetFiles returns the manifest file keys that exist on disk.
-func manifestParquetFiles(backupDir string, tables []interface{}, tableName string) []string {
+func manifestParquetFiles(backupDir string, tables []archive.TableEntry, tableName string) []string {
 	var files []string
 	for _, t := range tables {
-		tMap, ok := t.(map[string]interface{})
-		if !ok {
+		if tableName != "" && t.Name != tableName {
 			continue
 		}
-		if name, _ := tMap["name"].(string); tableName != "" && name != tableName {
-			continue
-		}
-		fileList, _ := tMap["files"].([]interface{})
-		for _, f := range fileList {
-			fMap, _ := f.(map[string]interface{})
-			key, ok := fMap["key"].(string)
-			if !ok {
-				continue
-			}
-			full := filepath.Join(backupDir, filepath.FromSlash(key))
+		for _, f := range t.Files {
+			full := filepath.Join(backupDir, filepath.FromSlash(f.Key))
 			if _, err := os.Stat(full); err == nil {
 				files = append(files, full)
 			}

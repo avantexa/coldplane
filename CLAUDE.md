@@ -19,7 +19,8 @@ coldplane/
 │   │   ├── mysql.go           # ArchiveMySQL: chunking + Parquet writing
 │   │   ├── options.go         # ArchiveOptions (ChunkSize, Workers, LocalOutputDir, Where)
 │   │   ├── filestore.go       # FileStore interface + LocalFileStore
-│   │   ├── local.go           # Backup directory helpers (list, delete, manifest)
+│   │   ├── manifest.go        # Manifest/TableEntry/FileEntry types, index.json read/write
+│   │   ├── local.go           # Backup directory helpers (list, delete, resolve)
 │   │   └── utils.go           # Schema inference, value sanitizing, ProgressTracker
 │   ├── dbutil/                # Shared SQL helpers: identifier quoting, time parsing, DB name from DSN
 │   ├── query/

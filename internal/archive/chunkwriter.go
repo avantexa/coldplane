@@ -21,7 +21,7 @@ type rowSource interface {
 // writeChunk drains src into Parquet files partitioned by partitionColumn,
 // stores them and returns their manifest entries. Progress is reported every
 // 100k rows and once at the end.
-func writeChunk(ctx context.Context, src rowSource, table string, chunkNum int, partitionColumn string, store FileStore, progress *ProgressTracker) ([]map[string]interface{}, error) {
+func writeChunk(ctx context.Context, src rowSource, table string, chunkNum int, partitionColumn string, store FileStore, progress *ProgressTracker) ([]FileEntry, error) {
 	columns, timestampCols := src.Columns()
 	partIdx := indexOf(columns, partitionColumn)
 

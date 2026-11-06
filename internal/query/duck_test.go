@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/csv"
 	"encoding/json"
+	"github.com/avantexa/coldplane/internal/archive"
 	"io"
 	"os"
 	"path/filepath"
@@ -176,131 +177,58 @@ func TestPrintQueryResults_TableFormatNilValue(t *testing.T) {
 
 func TestCollectLocalParquetFiles_FromManifest(t *testing.T) {
 	dir := t.TempDir()
-
-	// Create parquet files on disk
 	tableDir := filepath.Join(dir, "orders", "year=2025", "month=01")
 	os.MkdirAll(tableDir, 0755)
 	f1 := filepath.Join(tableDir, "orders-chunk-0-part-0.parquet")
 	os.WriteFile(f1, []byte("data"), 0644)
 
-	manifest := map[string]interface{}{
-		"tables": []interface{}{
-			map[string]interface{}{
-				"name": "orders",
-				"files": []interface{}{
-					map[string]interface{}{
-						"key":        "orders/year=2025/month=01/orders-chunk-0-part-0.parquet",
-						"size_bytes": float64(4),
-					},
-				},
-			},
-		},
-	}
-
-	files, err := collectLocalParquetFiles(dir, manifest, "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(files) != 1 {
-		t.Fatalf("expected 1 file, got %d", len(files))
-	}
-	if files[0] != f1 {
-		t.Errorf("got %q, want %q", files[0], f1)
+	manifest := archive.Manifest{Tables: []archive.TableEntry{{
+		Name:  "orders",
+		Files: []archive.FileEntry{{Key: "orders/year=2025/month=01/orders-chunk-0-part-0.parquet", SizeBytes: 4}},
+	}}}
+	files := collectLocalParquetFiles(dir, manifest, "")
+	if len(files) != 1 || files[0] != f1 {
+		t.Errorf("got %v, want [%s]", files, f1)
 	}
 }
 
 func TestCollectLocalParquetFiles_FilterByTable(t *testing.T) {
 	dir := t.TempDir()
-
-	// Create files for two tables
 	for _, table := range []string{"orders", "users"} {
-		tableDir := filepath.Join(dir, table)
-		os.MkdirAll(tableDir, 0755)
-		os.WriteFile(filepath.Join(tableDir, table+"-chunk-0.parquet"), []byte("data"), 0644)
+		os.MkdirAll(filepath.Join(dir, table), 0755)
+		os.WriteFile(filepath.Join(dir, table, table+"-chunk-0.parquet"), []byte("data"), 0644)
 	}
-
-	manifest := map[string]interface{}{
-		"tables": []interface{}{
-			map[string]interface{}{
-				"name": "orders",
-				"files": []interface{}{
-					map[string]interface{}{"key": "orders/orders-chunk-0.parquet", "size_bytes": float64(4)},
-				},
-			},
-			map[string]interface{}{
-				"name": "users",
-				"files": []interface{}{
-					map[string]interface{}{"key": "users/users-chunk-0.parquet", "size_bytes": float64(4)},
-				},
-			},
-		},
-	}
-
-	// Filter to orders only
-	files, err := collectLocalParquetFiles(dir, manifest, "orders")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(files) != 1 {
-		t.Fatalf("expected 1 file, got %d", len(files))
-	}
-	if !strings.Contains(files[0], "orders") {
-		t.Errorf("expected orders file, got %q", files[0])
+	manifest := archive.Manifest{Tables: []archive.TableEntry{
+		{Name: "orders", Files: []archive.FileEntry{{Key: "orders/orders-chunk-0.parquet", SizeBytes: 4}}},
+		{Name: "users", Files: []archive.FileEntry{{Key: "users/users-chunk-0.parquet", SizeBytes: 4}}},
+	}}
+	files := collectLocalParquetFiles(dir, manifest, "orders")
+	if len(files) != 1 || !strings.Contains(files[0], "orders") {
+		t.Errorf("expected only the orders file, got %v", files)
 	}
 }
 
 func TestCollectLocalParquetFiles_FallbackToWalk(t *testing.T) {
 	dir := t.TempDir()
-
-	// Create parquet files without manifest entries referencing them
 	tableDir := filepath.Join(dir, "events", "year=2025")
 	os.MkdirAll(tableDir, 0755)
 	os.WriteFile(filepath.Join(tableDir, "events-chunk-0.parquet"), []byte("data"), 0644)
 	os.WriteFile(filepath.Join(tableDir, "events-chunk-1.parquet"), []byte("data"), 0644)
 
-	// Manifest with no files listed (empty arrays)
-	manifest := map[string]interface{}{
-		"tables": []interface{}{
-			map[string]interface{}{
-				"name":  "events",
-				"files": []interface{}{},
-			},
-		},
+	// A manifest that lists no files falls back to walking the directory.
+	manifest := archive.Manifest{Tables: []archive.TableEntry{{Name: "events"}}}
+	if files := collectLocalParquetFiles(dir, manifest, ""); len(files) != 2 {
+		t.Errorf("expected 2 files from walk fallback, got %v", files)
 	}
-
-	files, err := collectLocalParquetFiles(dir, manifest, "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(files) != 2 {
-		t.Errorf("expected 2 files from walk fallback, got %d", len(files))
-	}
-}
-
-func TestCollectLocalParquetFiles_MissingTablesKey(t *testing.T) {
-	manifest := map[string]interface{}{}
-	_, err := collectLocalParquetFiles("/tmp", manifest, "")
-	if err == nil {
-		t.Error("expected error for manifest missing tables key")
+	// So does a manifest with no tables at all.
+	if files := collectLocalParquetFiles(dir, archive.Manifest{}, ""); len(files) != 2 {
+		t.Errorf("no tables: expected 2 files from walk fallback, got %v", files)
 	}
 }
 
 func TestCollectLocalParquetFiles_NoFiles(t *testing.T) {
-	dir := t.TempDir()
-	manifest := map[string]interface{}{
-		"tables": []interface{}{
-			map[string]interface{}{
-				"name":  "empty_table",
-				"files": []interface{}{},
-			},
-		},
-	}
-	files, err := collectLocalParquetFiles(dir, manifest, "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// Empty table with no files on disk → 0 files
-	if len(files) != 0 {
-		t.Errorf("expected 0 files, got %d", len(files))
+	manifest := archive.Manifest{Tables: []archive.TableEntry{{Name: "empty_table"}}}
+	if files := collectLocalParquetFiles(t.TempDir(), manifest, ""); len(files) != 0 {
+		t.Errorf("expected 0 files, got %v", files)
 	}
 }
