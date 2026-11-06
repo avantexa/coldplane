@@ -50,11 +50,13 @@ func moveByCopy(src, dst string) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("create dest: %w", err)
 	}
-	defer out.Close()
-
 	written, err := io.Copy(out, in)
 	if err != nil {
+		out.Close()
 		return 0, fmt.Errorf("copy file: %w", err)
+	}
+	if err := out.Close(); err != nil {
+		return 0, fmt.Errorf("close dest: %w", err)
 	}
 	os.Remove(src)
 	return written, nil

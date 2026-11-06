@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -206,9 +205,6 @@ func processPostgresChunkGeneric(ctx context.Context, conn *pgx.Conn, query stri
 		return nil, fmt.Errorf("query error: %w", err)
 	}
 	defer rows.Close()
-	if rows.FieldDescriptions() == nil {
-		return nil, fmt.Errorf("FieldDescriptions returned nil")
-	}
 	return writeChunk(ctx, &pgxRowSource{rows: rows}, table, chunkNum, partitionColumn, store, progress)
 }
 
@@ -226,7 +222,7 @@ func pgColumns(fields []pgconn.FieldDescription) ([]string, map[int]bool) {
 	return columns, timestampCols
 }
 
-// Add this helper function:
+// parseAnyTime parses the timestamp layouts both engines emit as text.
 func parseAnyTime(s string) (time.Time, error) {
 	formats := []string{
 		"2006-01-02 15:04:05",

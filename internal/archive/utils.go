@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -13,10 +12,10 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// debug mode — enabled via COLDPLANE_DEBUG=1 env var or --verbose flag.
-var debug = os.Getenv("COLDPLANE_DEBUG") == "1"
+// debug enables verbose diagnostics; the CLI sets it from --verbose.
+var debug bool
 
-// SetDebug allows the CLI to toggle debug mode from a flag.
+// SetDebug toggles debug output.
 func SetDebug(v bool) { debug = v }
 
 // quoteMySQLIdentifier wraps a MySQL identifier (table/column name) in backticks,
@@ -154,8 +153,6 @@ func ExtractDBName(dbURL string) string {
 // pages (which would cause a panic in parquet-go's PagesToChunk).
 func toParquetSafeValue(val interface{}) interface{} {
 	switch v := val.(type) {
-	case nil:
-		return nil // should not reach here; callers skip nil values
 	case string, int, int32, int64, float32, float64:
 		return v
 	case int8, int16, uint8, uint16, uint32, uint64:

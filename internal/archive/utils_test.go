@@ -160,12 +160,6 @@ func TestInferParquetSchema(t *testing.T) {
 // --- toParquetSafeValue ---
 
 func TestToParquetSafeValue(t *testing.T) {
-	t.Run("nil", func(t *testing.T) {
-		if toParquetSafeValue(nil) != nil {
-			t.Error("expected nil")
-		}
-	})
-
 	t.Run("string passthrough", func(t *testing.T) {
 		got := toParquetSafeValue("hello")
 		if got != "hello" {

@@ -22,10 +22,9 @@ import (
 
 // QueryOptions defines parameters for running a query against a local backup.
 type QueryOptions struct {
-	BackupID string // Required: the backup to query
-	Table    string // Optional: default table to query
-	SQL      string // Optional: SQL query text
-	Output   string // Output format: "table" (default), "json", or "csv"
+	Table  string // Optional: default table to query
+	SQL    string // Optional: SQL query text
+	Output string // Output format: "table" (default), "json", or "csv"
 }
 
 // RunLocal executes a SQL query against a backup's Parquet files using DuckDB.
@@ -34,7 +33,7 @@ func RunLocal(ctx context.Context, backupNameOrPath string, opts QueryOptions) e
 
 	manifest, err := archive.ReadLocalManifest(backupDir)
 	if err != nil {
-		return fmt.Errorf("local backup %q not found. Run 'coldplane backup list' to see available backups", backupNameOrPath)
+		return fmt.Errorf("local backup %q: %w. Run 'coldplane backup list' to see available backups", backupNameOrPath, err)
 	}
 
 	parquetFiles, err := collectLocalParquetFiles(backupDir, manifest, opts.Table)
@@ -78,7 +77,7 @@ func openParquetView(ctx context.Context, files []string) (*sql.DB, error) {
 	}
 	quoted := make([]string, len(files))
 	for i, p := range files {
-		quoted[i] = fmt.Sprintf("'%s'", p)
+		quoted[i] = "'" + strings.ReplaceAll(p, "'", "''") + "'"
 	}
 	viewSQL := fmt.Sprintf("CREATE VIEW restore_input AS SELECT * FROM read_parquet([%s])", strings.Join(quoted, ", "))
 	if _, err := db.ExecContext(ctx, viewSQL); err != nil {

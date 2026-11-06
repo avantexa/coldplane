@@ -1,12 +1,15 @@
 package main
 
 import (
+	"fmt"
+	"os"
+
 	"github.com/avantexa/coldplane/cmd"
-	"log"
 )
 
 func main() {
 	if err := cmd.Execute(); err != nil {
-		log.Fatalf("error: %v", err)
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
 	}
 }

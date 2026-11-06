@@ -92,11 +92,12 @@ var backupCreateCmd = &cobra.Command{
 		dbType := detectDBType(dbURL)
 		dbURL = normalizeDSN(dbURL)
 
+		tbls := splitList(tables)
+
 		// Auto-generate backupName if not provided
 		if backupName == "" {
 			now := time.Now().UTC().Format("20060102_150405")
 			dbName := archive.ExtractDBName(dbURL)
-			tbls := splitList(tables)
 			if len(tbls) == 1 {
 				backupName = fmt.Sprintf("%s_%s", tbls[0], now)
 			} else if len(tbls) > 1 {
@@ -115,8 +116,6 @@ var backupCreateCmd = &cobra.Command{
 			opts.Workers = workers
 		}
 		opts.Where = whereFlag
-
-		tbls := splitList(tables)
 
 		switch dbType {
 		case "mysql":
@@ -210,15 +209,17 @@ var queryRunCmd = &cobra.Command{
 			return fmt.Errorf("%s", term.ColorError("--backup-id is required"))
 		}
 
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+
 		opts := query.QueryOptions{
-			BackupID: backupID,
-			Table:    queryTable,
-			SQL:      sqlFlag,
-			Output:   output,
+			Table:  queryTable,
+			SQL:    sqlFlag,
+			Output: output,
 		}
 
 		fmt.Println(term.Cyan("Running query against archived backup..."))
-		if err := query.RunLocal(cmd.Context(), backupID, opts); err != nil {
+		if err := query.RunLocal(ctx, backupID, opts); err != nil {
 			return fmt.Errorf("%s: %w", term.ColorError("query failed"), err)
 		}
 		return nil

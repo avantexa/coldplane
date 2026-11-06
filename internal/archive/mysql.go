@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	_ "github.com/go-sql-driver/mysql"
 )
 
 // ArchiveMySQL archives one or more tables into local Parquet files under a single backup name.

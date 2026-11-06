@@ -1,6 +1,5 @@
-// Package term provides terminal color helpers: Cyan for inline status text,
-// and the ColorError/ColorSuccess/ColorWarning functions for user-facing
-// error and status messages.
+// Package term provides terminal color helpers: Cyan for inline status text
+// and ColorError for user-facing error messages.
 package term
 
 import (
@@ -14,11 +13,7 @@ const (
 	reset = "\x1b[0m"
 )
 
-var (
-	ColorError   = color.New(color.FgRed).SprintFunc()
-	ColorSuccess = color.New(color.FgGreen).SprintFunc()
-	ColorWarning = color.New(color.FgYellow).SprintFunc()
-)
+var ColorError = color.New(color.FgRed).SprintFunc()
 
 func Cyan(msg string) string {
 	return fmt.Sprintf("%s%s%s", cyan, msg, reset)

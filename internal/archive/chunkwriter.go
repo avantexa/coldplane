@@ -54,7 +54,9 @@ func writeChunk(ctx context.Context, src rowSource, table string, chunkNum int, 
 	if err != nil {
 		return nil, err
 	}
-	progress.AddRows(rowCount % 100_000)
+	if rem := rowCount % 100_000; rem > 0 {
+		progress.AddRows(rem)
+	}
 	progress.ChunkDone()
 	if debug {
 		fmt.Printf("[worker %d] Done: %d rows (Parquet files written and stored)\n", chunkNum, rowCount)
