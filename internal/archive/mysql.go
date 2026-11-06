@@ -259,7 +259,7 @@ func isMySQLIntegerType(dataType string) bool {
 	return false
 }
 
-// mysqlFirstDatetimeColumn returns the first DATETIME/TIMESTAMP column of the table, or "".
+// mysqlFirstDatetimeColumn returns the first DATETIME/TIMESTAMP/DATE column of the table, or "".
 func mysqlFirstDatetimeColumn(db *sql.DB, table string) (string, error) {
 	rows, err := db.Query(fmt.Sprintf("SHOW COLUMNS FROM %s", dbutil.QuoteMySQL(table)))
 	if err != nil {
@@ -272,7 +272,7 @@ func mysqlFirstDatetimeColumn(db *sql.DB, table string) (string, error) {
 			continue
 		}
 		ft := strings.ToLower(typ.String)
-		if field.Valid && (strings.Contains(ft, "datetime") || strings.Contains(ft, "timestamp")) {
+		if field.Valid && (strings.Contains(ft, "datetime") || strings.Contains(ft, "timestamp") || ft == "date") {
 			return field.String, nil
 		}
 	}

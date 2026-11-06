@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -34,7 +35,7 @@ func writeChunk(ctx context.Context, src rowSource, table string, chunkNum int, 
 			return nil, fmt.Errorf("failed to read row: %w", err)
 		}
 		if pw == nil {
-			pw = newPartitionedWriter(inferParquetSchema(columns, values))
+			pw = newPartitionedWriter(inferParquetSchema(columns, values, timestampCols))
 		}
 		if err := pw.write(partitionKey(valueAt(values, partIdx)), rowToMap(columns, values, timestampCols)); err != nil {
 			pw.discard()
@@ -66,19 +67,38 @@ func writeChunk(ctx context.Context, src rowSource, table string, chunkNum int, 
 
 // sqlRowSource adapts database/sql rows (MySQL).
 type sqlRowSource struct {
-	rows    *sql.Rows
-	columns []string
+	rows          *sql.Rows
+	columns       []string
+	timestampCols map[int]bool
 }
 
 func newSQLRowSource(rows *sql.Rows) (*sqlRowSource, error) {
-	columns, err := rows.Columns()
+	types, err := rows.ColumnTypes()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get columns: %w", err)
 	}
-	return &sqlRowSource{rows: rows, columns: columns}, nil
+	src := &sqlRowSource{rows: rows, columns: make([]string, len(types)), timestampCols: map[int]bool{}}
+	for i, t := range types {
+		src.columns[i] = t.Name()
+		if isMySQLTimeType(t.DatabaseTypeName()) {
+			src.timestampCols[i] = true
+		}
+	}
+	return src, nil
 }
 
-func (s *sqlRowSource) Columns() ([]string, map[int]bool) { return s.columns, nil }
+// isMySQLTimeType reports whether a MySQL column type holds a date or timestamp,
+// which rowToMap stores as epoch milliseconds whether the driver scanned it as
+// time.Time (parseTime=true) or as text.
+func isMySQLTimeType(dataType string) bool {
+	switch strings.ToUpper(dataType) {
+	case "DATE", "DATETIME", "TIMESTAMP":
+		return true
+	}
+	return false
+}
+
+func (s *sqlRowSource) Columns() ([]string, map[int]bool) { return s.columns, s.timestampCols }
 func (s *sqlRowSource) Next() bool                        { return s.rows.Next() }
 func (s *sqlRowSource) Err() error                        { return s.rows.Err() }
 func (s *sqlRowSource) Values() ([]interface{}, error) {

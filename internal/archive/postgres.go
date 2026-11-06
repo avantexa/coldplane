@@ -224,7 +224,9 @@ func pgChunkColumn(ctx context.Context, conn *pgx.Conn, table string) (chunkKind
 // pgFirstTimestampColumn returns the table's first date or timestamp column, or "".
 func pgFirstTimestampColumn(ctx context.Context, conn *pgx.Conn, table string) (string, error) {
 	rows, err := conn.Query(ctx,
-		`SELECT column_name, data_type FROM information_schema.columns WHERE table_name = $1`, table)
+		`SELECT column_name, data_type FROM information_schema.columns
+		 WHERE table_schema = current_schema() AND table_name = $1
+		 ORDER BY ordinal_position`, table)
 	if err != nil {
 		return "", err
 	}
@@ -247,7 +249,7 @@ func pgNumericPrimaryKey(ctx context.Context, conn *pgx.Conn, table string) stri
 		SELECT a.attname, format_type(a.atttypid, a.atttypmod)
 		FROM pg_index i
 		JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
-		WHERE i.indrelid = $1::regclass AND i.indisprimary`, table)
+		WHERE i.indrelid = $1::regclass AND i.indisprimary`, dbutil.QuotePG(table))
 	if err != nil {
 		return ""
 	}

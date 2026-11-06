@@ -81,7 +81,7 @@ func TestRowToMap(t *testing.T) {
 
 func TestPartitionedWriter_WriteFinishStore(t *testing.T) {
 	columns := []string{"id", "ts"}
-	schema := inferParquetSchema(columns, []interface{}{int64(1), "2025-01-01 00:00:00"})
+	schema := inferParquetSchema(columns, []interface{}{int64(1), "2025-01-01 00:00:00"}, nil)
 	w := newPartitionedWriter(schema)
 
 	for i, p := range []string{"year=2025/month=01", "year=2025/month=01", "year=2025/month=02"} {
@@ -136,7 +136,7 @@ func TestPartitionedWriter_WriteFinishStore(t *testing.T) {
 }
 
 func TestPartitionedWriter_DiscardRemovesTempFiles(t *testing.T) {
-	schema := inferParquetSchema([]string{"id"}, []interface{}{int64(1)})
+	schema := inferParquetSchema([]string{"id"}, []interface{}{int64(1)}, nil)
 	w := newPartitionedWriter(schema)
 	if err := w.write("year=2025/month=01", map[string]interface{}{"id": int64(1)}); err != nil {
 		t.Fatal(err)

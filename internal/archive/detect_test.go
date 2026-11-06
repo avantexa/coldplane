@@ -14,3 +14,16 @@ func TestIsMySQLIntegerType(t *testing.T) {
 		}
 	}
 }
+
+func TestIsMySQLTimeType(t *testing.T) {
+	for _, yes := range []string{"DATE", "DATETIME", "TIMESTAMP", "datetime"} {
+		if !isMySQLTimeType(yes) {
+			t.Errorf("%s should be a time type", yes)
+		}
+	}
+	for _, no := range []string{"TIME", "YEAR", "VARCHAR", "INT", ""} {
+		if isMySQLTimeType(no) {
+			t.Errorf("%s should not be a time type", no)
+		}
+	}
+}

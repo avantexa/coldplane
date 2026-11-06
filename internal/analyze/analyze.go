@@ -181,7 +181,8 @@ func analyzePostgresTable(ctx context.Context, pool *pgxpool.Pool, table string,
 // total relation size. An empty table is an error.
 func pgTableStats(ctx context.Context, pool *pgxpool.Pool, table string) (totalRows, sizeBytes int64, err error) {
 	err = pool.QueryRow(ctx,
-		`SELECT COALESCE(reltuples::bigint, 0) FROM pg_class WHERE relname = $1`, table).Scan(&totalRows)
+		`SELECT COALESCE(reltuples::bigint, 0) FROM pg_class
+		 WHERE relname = $1 AND relnamespace = current_schema()::regnamespace`, table).Scan(&totalRows)
 	if err != nil || totalRows <= 0 {
 		err = pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %s`, dbutil.QuotePG(table))).Scan(&totalRows)
 		if err != nil {
@@ -191,7 +192,7 @@ func pgTableStats(ctx context.Context, pool *pgxpool.Pool, table string) (totalR
 	if totalRows == 0 {
 		return 0, 0, fmt.Errorf("table is empty")
 	}
-	err = pool.QueryRow(ctx, `SELECT pg_total_relation_size($1::regclass)`, table).Scan(&sizeBytes)
+	err = pool.QueryRow(ctx, `SELECT pg_total_relation_size($1::regclass)`, dbutil.QuotePG(table)).Scan(&sizeBytes)
 	if err != nil {
 		return 0, 0, fmt.Errorf("get table size: %w", err)
 	}

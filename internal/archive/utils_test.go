@@ -48,7 +48,7 @@ func TestNormalizeMySQLDSN(t *testing.T) {
 
 func TestInferParquetSchema(t *testing.T) {
 	t.Run("int column", func(t *testing.T) {
-		schema := inferParquetSchema([]string{"id"}, []interface{}{int64(1)})
+		schema := inferParquetSchema([]string{"id"}, []interface{}{int64(1)}, nil)
 		if !strings.Contains(schema, "type=INT64") {
 			t.Errorf("expected INT64 for int64, got: %s", schema)
 		}
@@ -58,28 +58,37 @@ func TestInferParquetSchema(t *testing.T) {
 	})
 
 	t.Run("float column", func(t *testing.T) {
-		schema := inferParquetSchema([]string{"amount"}, []interface{}{float64(3.14)})
+		schema := inferParquetSchema([]string{"amount"}, []interface{}{float64(3.14)}, nil)
 		if !strings.Contains(schema, "type=DOUBLE") {
 			t.Errorf("expected DOUBLE for float64, got: %s", schema)
 		}
 	})
 
 	t.Run("string column", func(t *testing.T) {
-		schema := inferParquetSchema([]string{"name"}, []interface{}{"alice"})
+		schema := inferParquetSchema([]string{"name"}, []interface{}{"alice"}, nil)
 		if !strings.Contains(schema, "type=BYTE_ARRAY") {
 			t.Errorf("expected BYTE_ARRAY for string, got: %s", schema)
 		}
 	})
 
 	t.Run("time column", func(t *testing.T) {
-		schema := inferParquetSchema([]string{"created_at"}, []interface{}{time.Now()})
+		schema := inferParquetSchema([]string{"created_at"}, []interface{}{time.Now()}, nil)
 		if !strings.Contains(schema, "TIMESTAMP_MILLIS") {
 			t.Errorf("expected TIMESTAMP_MILLIS for time.Time, got: %s", schema)
 		}
 	})
 
+	t.Run("timestamp hint beats the sample value", func(t *testing.T) {
+		for _, sample := range []interface{}{[]byte("2025-01-01 00:00:00"), "2025-01-01", nil} {
+			schema := inferParquetSchema([]string{"ts"}, []interface{}{sample}, map[int]bool{0: true})
+			if !strings.Contains(schema, "TIMESTAMP_MILLIS") {
+				t.Errorf("sample %#v: expected TIMESTAMP_MILLIS, got %s", sample, schema)
+			}
+		}
+	})
+
 	t.Run("bool column", func(t *testing.T) {
-		schema := inferParquetSchema([]string{"active"}, []interface{}{true})
+		schema := inferParquetSchema([]string{"active"}, []interface{}{true}, nil)
 		// bool falls through to default → BYTE_ARRAY
 		if !strings.Contains(schema, "type=BYTE_ARRAY") {
 			t.Errorf("expected BYTE_ARRAY for bool, got: %s", schema)
@@ -90,6 +99,7 @@ func TestInferParquetSchema(t *testing.T) {
 		schema := inferParquetSchema(
 			[]string{"id", "name", "amount"},
 			[]interface{}{int64(1), "alice", float64(9.99)},
+			nil,
 		)
 		if !strings.Contains(schema, "name=id") {
 			t.Error("missing id field")

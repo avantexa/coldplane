@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -193,4 +194,69 @@ func TestLocalChunkingStrategies_MySQL(t *testing.T) {
 	testChunkingStrategies(t, func(ctx context.Context, name string, opts archive.ArchiveOptions, tables ...string) error {
 		return archive.ArchiveMySQL(ctx, mysqlGoDSN, tables, name, opts)
 	}, "mysql")
+}
+
+// parquetTimestampProbe reads a timestamp column's DuckDB type and minimum.
+func parquetTimestampProbe(t *testing.T, backupDir, table, column string) (string, string) {
+	t.Helper()
+	db, err := sql.Open("duckdb", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	glob := filepath.Join(backupDir, table, "**", "*.parquet")
+	var typ, min string
+	q := fmt.Sprintf("SELECT typeof(min(%s)), CAST(min(%s) AS VARCHAR) FROM read_parquet('%s')", column, column, glob)
+	if err := db.QueryRow(q).Scan(&typ, &min); err != nil {
+		t.Fatalf("probe %s.%s: %v", table, column, err)
+	}
+	return typ, min
+}
+
+func assertTimestampColumn(t *testing.T, backupDir string) {
+	t.Helper()
+	typ, min := parquetTimestampProbe(t, backupDir, "inttest_events", "happened_at")
+	if !strings.HasPrefix(typ, "TIMESTAMP") {
+		t.Errorf("happened_at stored as %s, want a TIMESTAMP type", typ)
+	}
+	if !strings.HasPrefix(min, "2023-01-15 12:00:00") {
+		t.Errorf("min(happened_at) = %s, want 2023-01-15 12:00:00", min)
+	}
+}
+
+// Timestamps must become Parquet TIMESTAMP columns on both engines, and for
+// MySQL whether or not the DSN asks the driver to parse times.
+func TestLocalTimestampTyping(t *testing.T) {
+	skipUnlessLocalTest(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	t.Run("postgres", func(t *testing.T) {
+		if err := seedChunkingTables("postgres", pgDSN); err != nil {
+			t.Fatal(err)
+		}
+		opts := archive.DefaultOptions()
+		opts.LocalOutputDir = t.TempDir()
+		if err := archive.ArchivePostgres(ctx, pgDSN, []string{"inttest_events"}, "ts", opts); err != nil {
+			t.Fatal(err)
+		}
+		assertTimestampColumn(t, filepath.Join(opts.LocalOutputDir, "ts"))
+	})
+
+	for name, dsn := range map[string]string{
+		"mysql parseTime":    mysqlGoDSN,
+		"mysql no parseTime": strings.Replace(mysqlGoDSN, "?parseTime=true", "", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := seedChunkingTables("mysql", mysqlGoDSN); err != nil {
+				t.Fatal(err)
+			}
+			opts := archive.DefaultOptions()
+			opts.LocalOutputDir = t.TempDir()
+			if err := archive.ArchiveMySQL(ctx, dsn, []string{"inttest_events"}, "ts", opts); err != nil {
+				t.Fatal(err)
+			}
+			assertTimestampColumn(t, filepath.Join(opts.LocalOutputDir, "ts"))
+		})
+	}
 }
