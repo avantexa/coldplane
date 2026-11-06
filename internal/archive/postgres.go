@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"github.com/avantexa/coldplane/internal/dbutil"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -15,7 +14,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// archivePostgresTable handles chunking, processing, and storing for a single table.
+// archivePostgresTable archives one table and returns its manifest entries
+// and the partition column it used.
 func archivePostgresTable(ctx context.Context, pool *pgxpool.Pool, store FileStore, table, where string, opts ArchiveOptions) ([]FileEntry, string, error) {
 	progress := &ProgressTracker{Table: table}
 
@@ -25,50 +25,42 @@ func archivePostgresTable(ctx context.Context, pool *pgxpool.Pool, store FileSto
 	}
 	defer conn.Release()
 
-	partitionColumnUsed := pgPartitionColumn(ctx, conn, table)
-
-	n, query, err := pgChunkPlan(ctx, conn, table, where, opts.ChunkSize, progress)
+	partitionColumn := pgPartitionColumn(ctx, conn, table)
+	kind, column, err := pgChunkColumn(ctx, conn.Conn(), table)
 	if err != nil {
-		return nil, partitionColumnUsed, err
+		return nil, partitionColumn, fmt.Errorf("failed to detect chunk column: %w", err)
 	}
-
-	var entriesMu sync.Mutex
-	var entries []FileEntry
-	err = runChunks(n, opts.Workers, func(i int) error {
-		dbConn, err := pool.Acquire(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to acquire DB connection: %w", err)
-		}
-		defer dbConn.Release()
-		q, args := query(i)
-		got, err := processPostgresChunkGeneric(ctx, dbConn.Conn(), q, args, table, i, partitionColumnUsed, store, progress)
-		if err != nil {
-			return err
-		}
-		entriesMu.Lock()
-		entries = append(entries, got...)
-		entriesMu.Unlock()
-		return nil
-	})
+	plan, err := pgChunkPlan(ctx, conn, table, where, kind, column, opts.ChunkSize, progress)
 	if err != nil {
-		return entries, partitionColumnUsed, err
+		return nil, partitionColumn, err
 	}
-	fmt.Printf("[summary] Table %s: %d rows archived in %d chunks\n", table, progress.DoneRows, progress.DoneChunks)
-	return entries, partitionColumnUsed, nil
+	entries, err := archiveTable(ctx, pgRunner(pool), store, table, partitionColumn, plan, opts.Workers, progress)
+	return entries, partitionColumn, err
 }
 
-// pgChunkPlan detects the chunking column and plans the chunks for it,
-// returning the chunk count and the per-chunk query builder.
-func pgChunkPlan(ctx context.Context, conn *pgxpool.Conn, table, where string, chunkSize int, progress *ProgressTracker) (int, func(int) (string, []interface{}), error) {
-	hasTime, timeColumn, hasID, idColumn, err := detectPostgresChunkingColumn(ctx, conn.Conn(), table)
-	if err != nil {
-		return 0, nil, fmt.Errorf("failed to detect chunk column: %w", err)
+// pgRunner executes chunk queries, each on its own pooled connection.
+func pgRunner(pool *pgxpool.Pool) chunkRunner {
+	return func(ctx context.Context, query string, args []interface{}) (rowSource, func(), error) {
+		conn, err := pool.Acquire(ctx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to acquire DB connection: %w", err)
+		}
+		rows, err := conn.Query(ctx, query, args...)
+		if err != nil {
+			conn.Release()
+			return nil, nil, fmt.Errorf("query error: %w", err)
+		}
+		return &pgxRowSource{rows: rows}, func() { rows.Close(); conn.Release() }, nil
 	}
-	switch {
-	case hasTime:
-		return pgTimeChunks(ctx, conn, table, where, timeColumn, progress)
-	case hasID:
-		return pgIDChunks(ctx, conn, table, where, idColumn, chunkSize, progress)
+}
+
+// pgChunkPlan plans the chunks for the detected strategy.
+func pgChunkPlan(ctx context.Context, conn *pgxpool.Conn, table, where string, kind chunkKind, column string, chunkSize int, progress *ProgressTracker) (chunkPlan, error) {
+	switch kind {
+	case chunkByTime:
+		return pgTimeChunks(ctx, conn, table, where, column, progress)
+	case chunkByID:
+		return pgIDChunks(ctx, conn, table, where, column, chunkSize, progress)
 	default:
 		return pgOffsetChunks(ctx, conn, table, where, chunkSize, progress)
 	}
@@ -111,63 +103,63 @@ func pgReportNoRows(ctx context.Context, conn *pgxpool.Conn, table, kind string)
 	}
 }
 
-// pgTimeChunks plans time-window chunks and returns the per-chunk query and arguments.
-func pgTimeChunks(ctx context.Context, conn *pgxpool.Conn, table, where, timeColumn string, progress *ProgressTracker) (int, func(int) (string, []interface{}), error) {
+// pgTimeChunks plans time-window chunks. Postgres TIMESTAMP has microsecond
+// precision, so the last window is nudged by one microsecond.
+func pgTimeChunks(ctx context.Context, conn *pgxpool.Conn, table, where, timeColumn string, progress *ProgressTracker) (chunkPlan, error) {
 	var minT, maxT sql.NullTime
 	if err := conn.QueryRow(ctx, pgMinMaxQuery(table, where, timeColumn)).Scan(&minT, &maxT); err != nil {
-		return 0, nil, fmt.Errorf("failed to get min/max timestamp: %w", err)
+		return chunkPlan{}, fmt.Errorf("failed to get min/max timestamp: %w", err)
 	}
 	if !minT.Valid || !maxT.Valid || minT.Time.After(maxT.Time) {
 		pgReportNoRows(ctx, conn, table, "time range")
-		return 0, nil, nil
+		return chunkPlan{}, nil
 	}
 	window := timeWindow(maxT.Time.Sub(minT.Time), defaultTimeWindow, maxTimeChunks)
-	// Postgres TIMESTAMP precision is microseconds, so +1µs is the minimal nudge.
-	plan := planTimeChunks(minT.Time, maxT.Time, window, time.Microsecond)
-	progress.TotalChunks = len(plan)
+	ranges := planTimeChunks(minT.Time, maxT.Time, window, time.Microsecond)
+	progress.TotalChunks = len(ranges)
 	fmt.Printf("[archive-postgres] Using %q for time chunking: min=%s max=%s window=%s (%d chunks)\n",
-		timeColumn, minT.Time.Format(time.RFC3339), maxT.Time.Format(time.RFC3339), window, len(plan))
+		timeColumn, minT.Time.Format(time.RFC3339), maxT.Time.Format(time.RFC3339), window, len(ranges))
 	sel := pgRangeQuery(table, where, timeColumn)
-	return len(plan), func(i int) (string, []interface{}) {
-		return sel, []interface{}{plan[i].Start, plan[i].End}
-	}, nil
+	return chunkPlan{n: len(ranges), query: func(i int) (string, []interface{}) {
+		return sel, []interface{}{ranges[i].Start, ranges[i].End}
+	}}, nil
 }
 
-// pgIDChunks plans primary-key range chunks and returns the per-chunk query and arguments.
-func pgIDChunks(ctx context.Context, conn *pgxpool.Conn, table, where, idColumn string, chunkSize int, progress *ProgressTracker) (int, func(int) (string, []interface{}), error) {
+// pgIDChunks plans primary-key range chunks.
+func pgIDChunks(ctx context.Context, conn *pgxpool.Conn, table, where, idColumn string, chunkSize int, progress *ProgressTracker) (chunkPlan, error) {
 	var minID, maxID sql.NullInt64
 	if err := conn.QueryRow(ctx, pgMinMaxQuery(table, where, idColumn)).Scan(&minID, &maxID); err != nil {
-		return 0, nil, fmt.Errorf("failed to get min/max id: %w", err)
+		return chunkPlan{}, fmt.Errorf("failed to get min/max id: %w", err)
 	}
 	if !minID.Valid || !maxID.Valid || minID.Int64 > maxID.Int64 {
 		pgReportNoRows(ctx, conn, table, "ID range")
-		return 0, nil, nil
+		return chunkPlan{}, nil
 	}
-	plan := planIDChunks(minID.Int64, maxID.Int64, int64(chunkSize))
+	ranges := planIDChunks(minID.Int64, maxID.Int64, int64(chunkSize))
 	progress.TotalRows = maxID.Int64 - minID.Int64 + 1
-	progress.TotalChunks = len(plan)
-	fmt.Printf("[archive-postgres] Using PK %q for chunking: min=%d max=%d, chunks=%d\n", idColumn, minID.Int64, maxID.Int64, len(plan))
+	progress.TotalChunks = len(ranges)
+	fmt.Printf("[archive-postgres] Using PK %q for chunking: min=%d max=%d, chunks=%d\n", idColumn, minID.Int64, maxID.Int64, len(ranges))
 	sel := pgRangeQuery(table, where, idColumn)
-	return len(plan), func(i int) (string, []interface{}) {
-		return sel, []interface{}{plan[i].Start, plan[i].End}
-	}, nil
+	return chunkPlan{n: len(ranges), query: func(i int) (string, []interface{}) {
+		return sel, []interface{}{ranges[i].Start, ranges[i].End}
+	}}, nil
 }
 
-// pgOffsetChunks plans LIMIT/OFFSET pages and returns the per-chunk query and arguments.
-func pgOffsetChunks(ctx context.Context, conn *pgxpool.Conn, table, where string, chunkSize int, progress *ProgressTracker) (int, func(int) (string, []interface{}), error) {
+// pgOffsetChunks plans LIMIT/OFFSET pages.
+func pgOffsetChunks(ctx context.Context, conn *pgxpool.Conn, table, where string, chunkSize int, progress *ProgressTracker) (chunkPlan, error) {
 	fmt.Println("[archive-postgres] Fallback: OFFSET/LIMIT chunking")
 	var totalRows int
 	if err := conn.QueryRow(ctx, pgCountQuery(table, where)).Scan(&totalRows); err != nil {
-		return 0, nil, fmt.Errorf("failed to count rows: %w", err)
+		return chunkPlan{}, fmt.Errorf("failed to count rows: %w", err)
 	}
-	plan := planOffsetChunks(totalRows, chunkSize)
+	pages := planOffsetChunks(totalRows, chunkSize)
 	progress.TotalRows = int64(totalRows)
-	progress.TotalChunks = len(plan)
-	fmt.Printf("[archive-postgres] Row count: %d; Chunks: %d\n", totalRows, len(plan))
+	progress.TotalChunks = len(pages)
+	fmt.Printf("[archive-postgres] Row count: %d; Chunks: %d\n", totalRows, len(pages))
 	sel := pgOffsetQuery(table, where)
-	return len(plan), func(i int) (string, []interface{}) {
-		return sel, []interface{}{plan[i].Limit, plan[i].Offset}
-	}, nil
+	return chunkPlan{n: len(pages), query: func(i int) (string, []interface{}) {
+		return sel, []interface{}{pages[i].Limit, pages[i].Offset}
+	}}, nil
 }
 
 // ArchivePostgres archives one or more tables into local Parquet files under a single backup name.
@@ -199,16 +191,6 @@ func ArchivePostgres(ctx context.Context, dbURL string, tables []string, name st
 	return nil
 }
 
-// processPostgresChunkGeneric runs one chunk query and archives its rows.
-func processPostgresChunkGeneric(ctx context.Context, conn *pgx.Conn, query string, args []interface{}, table string, chunkNum int, partitionColumn string, store FileStore, progress *ProgressTracker) ([]FileEntry, error) {
-	rows, err := conn.Query(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("query error: %w", err)
-	}
-	defer rows.Close()
-	return writeChunk(ctx, &pgxRowSource{rows: rows}, table, chunkNum, partitionColumn, store, progress)
-}
-
 // pgColumns returns the column names and the positions of date/timestamp
 // columns (OIDs: timestamp 1114, timestamptz 1184, date 1082).
 func pgColumns(fields []pgconn.FieldDescription) ([]string, map[int]bool) {
@@ -223,20 +205,20 @@ func pgColumns(fields []pgconn.FieldDescription) ([]string, map[int]bool) {
 	return columns, timestampCols
 }
 
-// detectPostgresChunkingColumn picks the best chunking column: the first
-// date/timestamp column, then an integer primary key, else none (OFFSET/LIMIT).
-func detectPostgresChunkingColumn(ctx context.Context, conn *pgx.Conn, table string) (hasTime bool, timeColumn string, hasID bool, idColumn string, err error) {
+// pgChunkColumn picks the chunking strategy: the first date/timestamp
+// column first, then an integer primary key, else OFFSET/LIMIT.
+func pgChunkColumn(ctx context.Context, conn *pgx.Conn, table string) (chunkKind, string, error) {
 	col, err := pgFirstTimestampColumn(ctx, conn, table)
 	if err != nil {
-		return false, "", false, "", err
+		return chunkByOffset, "", err
 	}
 	if col != "" {
-		return true, col, false, "", nil
+		return chunkByTime, col, nil
 	}
 	if col := pgNumericPrimaryKey(ctx, conn, table); col != "" {
-		return false, "", true, col, nil
+		return chunkByID, col, nil
 	}
-	return false, "", false, "", nil
+	return chunkByOffset, "", nil
 }
 
 // pgFirstTimestampColumn returns the table's first date or timestamp column, or "".

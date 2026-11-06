@@ -8,24 +8,23 @@ import (
 
 const mysqlTimeLayout = "2006-01-02 15:04:05"
 
-// mysqlRangeQuery selects the rows of table where lo <= col < hi, with lo and
-// hi already rendered as SQL literals, optionally narrowed by a WHERE clause.
-func mysqlRangeQuery(table, where, col, lo, hi string) string {
+// mysqlRangeQuery selects the rows of table where ? <= col < ?, optionally
+// narrowed by a WHERE clause. The bounds are bound as arguments.
+func mysqlRangeQuery(table, where, col string) string {
 	qt, qc := dbutil.QuoteMySQL(table), dbutil.QuoteMySQL(col)
-	pred := fmt.Sprintf("(%s >= %s AND %s < %s)", qc, lo, qc, hi)
 	if where != "" {
-		return fmt.Sprintf("SELECT * FROM %s WHERE (%s) AND %s", qt, where, pred)
+		return fmt.Sprintf("SELECT * FROM %s WHERE (%s) AND (%s >= ? AND %s < ?)", qt, where, qc, qc)
 	}
-	return fmt.Sprintf("SELECT * FROM %s WHERE %s", qt, pred)
+	return fmt.Sprintf("SELECT * FROM %s WHERE %s >= ? AND %s < ?", qt, qc, qc)
 }
 
-// mysqlOffsetQuery selects one LIMIT/OFFSET page of table.
-func mysqlOffsetQuery(table, where string, offset, limit int) string {
+// mysqlOffsetQuery selects one page of table with LIMIT ? OFFSET ?.
+func mysqlOffsetQuery(table, where string) string {
 	q := "SELECT * FROM " + dbutil.QuoteMySQL(table)
 	if where != "" {
 		q += " WHERE " + where
 	}
-	return fmt.Sprintf("%s LIMIT %d OFFSET %d", q, limit, offset)
+	return q + " LIMIT ? OFFSET ?"
 }
 
 // mysqlCountQuery counts the rows of table, optionally narrowed by a WHERE clause.

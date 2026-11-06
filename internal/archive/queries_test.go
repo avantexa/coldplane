@@ -4,10 +4,10 @@ import "testing"
 
 func TestMySQLQueries(t *testing.T) {
 	cases := map[string][2]string{
-		"range":        {mysqlRangeQuery("t", "", "id", "1", "6"), "SELECT * FROM `t` WHERE (`id` >= 1 AND `id` < 6)"},
-		"range where":  {mysqlRangeQuery("t", "x > 0", "ts", "'a'", "'b'"), "SELECT * FROM `t` WHERE (x > 0) AND (`ts` >= 'a' AND `ts` < 'b')"},
-		"offset":       {mysqlOffsetQuery("t", "", 20, 10), "SELECT * FROM `t` LIMIT 10 OFFSET 20"},
-		"offset where": {mysqlOffsetQuery("t", "x > 0", 0, 5), "SELECT * FROM `t` WHERE x > 0 LIMIT 5 OFFSET 0"},
+		"range":        {mysqlRangeQuery("t", "", "id"), "SELECT * FROM `t` WHERE `id` >= ? AND `id` < ?"},
+		"range where":  {mysqlRangeQuery("t", "x > 0", "ts"), "SELECT * FROM `t` WHERE (x > 0) AND (`ts` >= ? AND `ts` < ?)"},
+		"offset":       {mysqlOffsetQuery("t", ""), "SELECT * FROM `t` LIMIT ? OFFSET ?"},
+		"offset where": {mysqlOffsetQuery("t", "x > 0"), "SELECT * FROM `t` WHERE x > 0 LIMIT ? OFFSET ?"},
 		"count":        {mysqlCountQuery("t", "x > 0"), "SELECT COUNT(*) FROM `t` WHERE x > 0"},
 		"minmax":       {mysqlMinMaxQuery("t", "", "id"), "SELECT MIN(`id`), MAX(`id`) FROM `t`"},
 		"minmax where": {mysqlMinMaxQuery("t", "x > 0", "id"), "SELECT MIN(`id`), MAX(`id`) FROM `t` WHERE x > 0"},

@@ -1,6 +1,7 @@
 package archive
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -97,4 +98,53 @@ func runChunks(n, workers int, fn func(i int) error) error {
 	}
 	wg.Wait()
 	return first
+}
+
+// chunkKind is the strategy used to split a table into chunks.
+type chunkKind int
+
+const (
+	chunkByOffset chunkKind = iota // LIMIT/OFFSET pages: no usable key or timestamp
+	chunkByID                      // ranges of an integer primary key
+	chunkByTime                    // windows of a timestamp column
+)
+
+// chunkPlan is a table's planned chunk queries: n chunks, each a query with
+// its bound arguments.
+type chunkPlan struct {
+	n     int
+	query func(i int) (string, []interface{})
+}
+
+// chunkRunner executes one chunk query against an engine and returns its rows
+// plus a release function that closes them.
+type chunkRunner func(ctx context.Context, query string, args []interface{}) (rowSource, func(), error)
+
+// archiveTable runs every chunk of plan through run, with up to workers in
+// parallel, writes the rows as partitioned Parquet into store and returns the
+// manifest entries of the stored files.
+func archiveTable(ctx context.Context, run chunkRunner, store FileStore, table, partitionColumn string, plan chunkPlan, workers int, progress *ProgressTracker) ([]FileEntry, error) {
+	var mu sync.Mutex
+	var entries []FileEntry
+	err := runChunks(plan.n, workers, func(i int) error {
+		q, args := plan.query(i)
+		src, release, err := run(ctx, q, args)
+		if err != nil {
+			return err
+		}
+		defer release()
+		got, err := writeChunk(ctx, src, table, i, partitionColumn, store, progress)
+		if err != nil {
+			return err
+		}
+		mu.Lock()
+		entries = append(entries, got...)
+		mu.Unlock()
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	fmt.Printf("[summary] Table %s: %d rows archived in %d chunks\n", table, progress.DoneRows, progress.DoneChunks)
+	return entries, nil
 }
