@@ -31,14 +31,3 @@ func firstTimeColumn(columns []string, row []interface{}) string {
 	}
 	return ""
 }
-
-// lastTimeColumn returns the last column whose value in row looks like a timestamp.
-func lastTimeColumn(columns []string, row []interface{}) string {
-	found := ""
-	for i, v := range row {
-		if i < len(columns) && !timeValue(v).IsZero() {
-			found = columns[i]
-		}
-	}
-	return found
-}

@@ -25,10 +25,14 @@ func archivePostgresTable(ctx context.Context, pool *pgxpool.Pool, store FileSto
 	}
 	defer conn.Release()
 
-	partitionColumn := pgPartitionColumn(ctx, conn, table)
 	kind, column, err := pgChunkColumn(ctx, conn.Conn(), table)
 	if err != nil {
-		return nil, partitionColumn, fmt.Errorf("failed to detect chunk column: %w", err)
+		return nil, "", fmt.Errorf("failed to detect chunk column: %w", err)
+	}
+	// The time column we chunk on is also the natural partition column.
+	partitionColumn := column
+	if kind != chunkByTime {
+		partitionColumn = pgPartitionColumn(ctx, conn, table)
 	}
 	plan, err := pgChunkPlan(ctx, conn, table, where, kind, column, opts.ChunkSize, progress)
 	if err != nil {
@@ -66,8 +70,8 @@ func pgChunkPlan(ctx context.Context, conn *pgxpool.Conn, table, where string, k
 	}
 }
 
-// pgPartitionColumn infers the partition column from the last
-// timestamp-looking value of the table's first row.
+// pgPartitionColumn infers the partition column from the first
+// timestamp-looking value of the table's first row, like MySQL.
 func pgPartitionColumn(ctx context.Context, conn *pgxpool.Conn, table string) string {
 	rows, err := conn.Query(ctx, fmt.Sprintf("SELECT * FROM %s LIMIT 1", dbutil.QuotePG(table)))
 	if err != nil {
@@ -83,7 +87,7 @@ func pgPartitionColumn(ctx context.Context, conn *pgxpool.Conn, table string) st
 	found := ""
 	if rows.Next() {
 		if vals, err := rows.Values(); err == nil {
-			found = lastTimeColumn(columns, vals)
+			found = firstTimeColumn(columns, vals)
 		}
 	}
 	if found == "" {

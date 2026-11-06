@@ -23,14 +23,11 @@ func TestTimeValue(t *testing.T) {
 	}
 }
 
-func TestFirstAndLastTimeColumn(t *testing.T) {
+func TestFirstTimeColumn(t *testing.T) {
 	cols := []string{"id", "created_at", "name", "updated_at"}
 	row := []interface{}{int64(1), time.Now(), "x", "2025-01-01"}
 	if got := firstTimeColumn(cols, row); got != "created_at" {
 		t.Errorf("first: got %q", got)
-	}
-	if got := lastTimeColumn(cols, row); got != "updated_at" {
-		t.Errorf("last: got %q", got)
 	}
 	if got := firstTimeColumn(cols, []interface{}{int64(1), "a", "b", nil}); got != "" {
 		t.Errorf("no time column: got %q", got)

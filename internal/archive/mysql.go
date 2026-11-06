@@ -57,7 +57,11 @@ func archiveMySQLTable(ctx context.Context, db *sql.DB, store FileStore, table, 
 	if err != nil {
 		return nil, "", fmt.Errorf("[archive-mysql] failed to detect chunk column: %w", err)
 	}
-	partitionColumn := mysqlPartitionColumn(db, table)
+	// The time column we chunk on is also the natural partition column.
+	partitionColumn := column
+	if kind != chunkByTime {
+		partitionColumn = mysqlPartitionColumn(db, table)
+	}
 	if partitionColumn == "" && kind == chunkByOffset {
 		partitionColumn = detectMySQLDatetimeColumn(db, table)
 	}

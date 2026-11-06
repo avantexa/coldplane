@@ -58,9 +58,6 @@ func TestTimeColumns_RowLongerThanColumns(t *testing.T) {
 	if got := firstTimeColumn(cols, row); got != "" {
 		t.Errorf("first: %q", got)
 	}
-	if got := lastTimeColumn(cols, row); got != "" {
-		t.Errorf("last: %q", got)
-	}
 }
 
 func TestValueAtAndIndexOf(t *testing.T) {
