@@ -163,9 +163,17 @@ func pgOffsetChunks(ctx context.Context, conn *pgxpool.Conn, table, where string
 }
 
 // ArchivePostgres archives one or more tables into local Parquet files under a single backup name.
-func ArchivePostgres(ctx context.Context, dbURL string, tables []string, name string, opts ArchiveOptions) error {
+func ArchivePostgres(ctx context.Context, dbURL string, tables []string, name string, opts ArchiveOptions) (err error) {
 	fmt.Println("[archive-postgres] Starting archive process")
-	backupDir := backupDirFor(opts, name)
+	backupDir, err := prepareBackupDir(opts, name)
+	if err != nil {
+		return fmt.Errorf("[archive-postgres] %w", err)
+	}
+	defer func() {
+		if err != nil {
+			discardBackupDir(backupDir)
+		}
+	}()
 	store := &LocalFileStore{BaseDir: backupDir}
 
 	pool, err := pgxpool.New(ctx, dbURL)

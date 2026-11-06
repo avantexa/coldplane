@@ -121,3 +121,23 @@ func ReadLocalManifest(backupDir string) (Manifest, error) {
 	}
 	return m, nil
 }
+
+// prepareBackupDir returns the directory for a new backup and refuses to
+// reuse one that already exists, so a rerun never merges into an old backup.
+func prepareBackupDir(opts ArchiveOptions, name string) (string, error) {
+	dir := backupDirFor(opts, name)
+	if _, err := os.Stat(dir); err == nil {
+		return "", fmt.Errorf("backup %q already exists at %s; choose another --name or delete it first", name, dir)
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("check backup dir: %w", err)
+	}
+	return dir, nil
+}
+
+// discardBackupDir removes a backup directory a failed run left behind, so
+// no half-written backup without index.json lingers. Best effort.
+func discardBackupDir(dir string) {
+	if err := os.RemoveAll(dir); err == nil {
+		fmt.Printf("Removed incomplete backup at %s\n", dir)
+	}
+}

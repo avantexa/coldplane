@@ -12,9 +12,17 @@ import (
 )
 
 // ArchiveMySQL archives one or more tables into local Parquet files under a single backup name.
-func ArchiveMySQL(ctx context.Context, dsn string, tables []string, name string, opts ArchiveOptions) error {
+func ArchiveMySQL(ctx context.Context, dsn string, tables []string, name string, opts ArchiveOptions) (err error) {
 	fmt.Println("[archive-mysql] Starting archive process")
-	backupDir := backupDirFor(opts, name)
+	backupDir, err := prepareBackupDir(opts, name)
+	if err != nil {
+		return fmt.Errorf("[archive-mysql] %w", err)
+	}
+	defer func() {
+		if err != nil {
+			discardBackupDir(backupDir)
+		}
+	}()
 	store := &LocalFileStore{BaseDir: backupDir}
 
 	db, err := sql.Open("mysql", dsn)

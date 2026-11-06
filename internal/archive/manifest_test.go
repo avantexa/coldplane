@@ -103,3 +103,21 @@ func containsBytes(data []byte, s string) bool {
 		return false
 	})()
 }
+
+func TestPrepareBackupDir(t *testing.T) {
+	opts := ArchiveOptions{LocalOutputDir: t.TempDir()}
+	dir, err := prepareBackupDir(opts, "fresh")
+	if err != nil || dir != filepath.Join(opts.LocalOutputDir, "fresh") {
+		t.Fatalf("fresh: %q %v", dir, err)
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prepareBackupDir(opts, "fresh"); err == nil {
+		t.Error("an existing backup directory must be refused")
+	}
+	discardBackupDir(dir)
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Error("discardBackupDir should remove the directory")
+	}
+}

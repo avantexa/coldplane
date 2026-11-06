@@ -305,82 +305,87 @@ best. No data leaves your machine.`,
 			return nil
 		}
 
-		// Render table
-		t := prettytable.NewWriter()
-		t.SetOutputMirror(os.Stdout)
-		t.SetStyle(prettytable.StyleRounded)
-		t.AppendHeader(prettytable.Row{
-			"Table", "Total Rows", "Size", "Date Column", "Oldest Row",
-			fmt.Sprintf("Rows older than %s", report.OlderThan), "Est. Archived Size",
-		})
-
-		var totalRows, totalArchivable, totalSize, totalEstArchived int64
-		for _, tr := range report.Tables {
-			t.AppendRow(prettytable.Row{
-				tr.TableName,
-				humanCount(tr.TotalRows),
-				humanSizeInt64(tr.SizeBytes),
-				tr.DateColumn,
-				tr.OldestRow.Format("2006-01-02"),
-				fmt.Sprintf("%s (%d%%)", humanCount(tr.ArchivableRows), tr.ArchivablePct),
-				"~" + humanSizeInt64(tr.EstArchivedBytes),
-			})
-			totalRows += tr.TotalRows
-			totalArchivable += tr.ArchivableRows
-			totalSize += tr.SizeBytes
-			totalEstArchived += tr.EstArchivedBytes
-		}
-		t.Render()
-
-		// Summary
-		totalPct := 0
-		if totalRows > 0 {
-			totalPct = int(totalArchivable * 100 / totalRows)
-		}
-		fmt.Printf("\n%s rows (%d%%) across %d tables are older than %s.\n",
-			humanCount(totalArchivable), totalPct, len(report.Tables), report.OlderThan)
-		fmt.Printf("Estimated archive size: ~%s (compressed from ~%s)\n",
-			humanSizeInt64(totalEstArchived), humanSizeInt64(totalSize))
-		fmt.Println("Note: old data is not necessarily stale. Review the tables above and decide what to archive.")
-
-		// Suggestion — group archivable tables by date column so the --where clause is correct
-		type tableGroup struct {
-			dateCol string
-			tables  []string
-		}
-		var groups []tableGroup
-		groupIndex := map[string]int{}
-
-		for _, tr := range report.Tables {
-			if tr.ArchivableRows > 0 {
-				idx, exists := groupIndex[tr.DateColumn]
-				if !exists {
-					idx = len(groups)
-					groups = append(groups, tableGroup{dateCol: tr.DateColumn})
-					groupIndex[tr.DateColumn] = idx
-				}
-				groups[idx].tables = append(groups[idx].tables, tr.TableName)
-			}
-		}
-
-		if len(groups) > 0 {
-			cutoffStr := report.CutoffDate.Format("2006-01-02")
+		renderAnalyzeReport(os.Stdout, report)
+		if suggestions := archiveSuggestions(report, originalDBURL); len(suggestions) > 0 {
 			fmt.Println("To archive:")
-			for _, g := range groups {
-				whereClause := fmt.Sprintf("%s < '%s'", g.dateCol, cutoffStr)
-				fmt.Printf("  coldplane backup create \\\n    --db-url %q \\\n    --tables %q \\\n    --where %q\n",
-					originalDBURL, strings.Join(g.tables, ","), whereClause)
-				if len(groups) > 1 {
-					fmt.Println()
-				}
-			}
+			fmt.Println(strings.Join(suggestions, "\n\n"))
 		}
-
 		return nil
 	},
 }
 
 // =============== HELPERS ===============
+
+// renderAnalyzeReport prints one row per table and the totals.
+func renderAnalyzeReport(w io.Writer, report *analyze.Report) {
+	t := prettytable.NewWriter()
+	t.SetOutputMirror(w)
+	t.SetStyle(prettytable.StyleRounded)
+	t.AppendHeader(prettytable.Row{
+		"Table", "Total Rows", "Size", "Date Column", "Oldest Row",
+		fmt.Sprintf("Rows older than %s", report.OlderThan), "Est. Archived Size",
+	})
+
+	var totalRows, totalArchivable, totalSize, totalEstArchived int64
+	for _, tr := range report.Tables {
+		t.AppendRow(prettytable.Row{
+			tr.TableName,
+			humanCount(tr.TotalRows),
+			humanSizeInt64(tr.SizeBytes),
+			tr.DateColumn,
+			tr.OldestRow.Format("2006-01-02"),
+			fmt.Sprintf("%s (%d%%)", humanCount(tr.ArchivableRows), tr.ArchivablePct),
+			"~" + humanSizeInt64(tr.EstArchivedBytes),
+		})
+		totalRows += tr.TotalRows
+		totalArchivable += tr.ArchivableRows
+		totalSize += tr.SizeBytes
+		totalEstArchived += tr.EstArchivedBytes
+	}
+	t.Render()
+
+	totalPct := 0
+	if totalRows > 0 {
+		totalPct = int(totalArchivable * 100 / totalRows)
+	}
+	fmt.Fprintf(w, "\n%s rows (%d%%) across %d tables are older than %s.\n",
+		humanCount(totalArchivable), totalPct, len(report.Tables), report.OlderThan)
+	fmt.Fprintf(w, "Estimated archive size: ~%s (compressed from ~%s)\n",
+		humanSizeInt64(totalEstArchived), humanSizeInt64(totalSize))
+	fmt.Fprintln(w, "Note: old data is not necessarily stale. Review the tables above and decide what to archive.")
+}
+
+// archiveSuggestions returns one 'backup create' command per date column
+// that has archivable rows, grouping the tables that share the column so
+// the --where clause fits every table in the command.
+func archiveSuggestions(report *analyze.Report, dbURL string) []string {
+	type group struct {
+		dateCol string
+		tables  []string
+	}
+	var groups []*group
+	byCol := map[string]*group{}
+	for _, tr := range report.Tables {
+		if tr.ArchivableRows == 0 {
+			continue
+		}
+		g, ok := byCol[tr.DateColumn]
+		if !ok {
+			g = &group{dateCol: tr.DateColumn}
+			byCol[tr.DateColumn] = g
+			groups = append(groups, g)
+		}
+		g.tables = append(g.tables, tr.TableName)
+	}
+	cutoff := report.CutoffDate.Format("2006-01-02")
+	var out []string
+	for _, g := range groups {
+		where := fmt.Sprintf("%s < '%s'", g.dateCol, cutoff)
+		out = append(out, fmt.Sprintf("  coldplane backup create \\\n    --db-url %q \\\n    --tables %q \\\n    --where %q",
+			dbURL, strings.Join(g.tables, ","), where))
+	}
+	return out
+}
 
 func humanCount(n int64) string {
 	switch {
