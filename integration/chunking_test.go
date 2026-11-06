@@ -90,7 +90,7 @@ func testChunkingStrategies(t *testing.T, run func(ctx context.Context, name str
 
 	backupDir := t.TempDir()
 	opts := archive.DefaultOptions()
-	opts.LocalOutputDir = backupDir
+	opts.OutputDir = backupDir
 	opts.ChunkSize = 10 // 25 ids spread over 73 values -> several PK chunks
 	opts.Workers = 2
 
@@ -118,7 +118,7 @@ func testChunkingStrategies(t *testing.T, run func(ctx context.Context, name str
 	if err := run(ctx, "nothing", whereOpts, "inttest_empty", "inttest_ids"); err != nil {
 		t.Fatalf("archive with no matching rows: %v", err)
 	}
-	nothing, err := archive.ReadLocalManifest(filepath.Join(backupDir, "nothing"))
+	nothing, err := archive.ReadManifest(filepath.Join(backupDir, "nothing"))
 	if err != nil {
 		t.Fatalf("manifest: %v", err)
 	}
@@ -131,7 +131,7 @@ func testChunkingStrategies(t *testing.T, run func(ctx context.Context, name str
 		t.Errorf("empty backup size = %d", nothing.SizeBytes)
 	}
 
-	manifest, err := archive.ReadLocalManifest(filepath.Join(backupDir, "chunking"))
+	manifest, err := archive.ReadManifest(filepath.Join(backupDir, "chunking"))
 	if err != nil {
 		t.Fatalf("manifest: %v", err)
 	}
@@ -236,11 +236,11 @@ func TestLocalTimestampTyping(t *testing.T) {
 			t.Fatal(err)
 		}
 		opts := archive.DefaultOptions()
-		opts.LocalOutputDir = t.TempDir()
+		opts.OutputDir = t.TempDir()
 		if err := archive.ArchivePostgres(ctx, pgDSN, []string{"inttest_events"}, "ts", opts); err != nil {
 			t.Fatal(err)
 		}
-		assertTimestampColumn(t, filepath.Join(opts.LocalOutputDir, "ts"))
+		assertTimestampColumn(t, filepath.Join(opts.OutputDir, "ts"))
 	})
 
 	for name, dsn := range map[string]string{
@@ -252,11 +252,11 @@ func TestLocalTimestampTyping(t *testing.T) {
 				t.Fatal(err)
 			}
 			opts := archive.DefaultOptions()
-			opts.LocalOutputDir = t.TempDir()
+			opts.OutputDir = t.TempDir()
 			if err := archive.ArchiveMySQL(ctx, dsn, []string{"inttest_events"}, "ts", opts); err != nil {
 				t.Fatal(err)
 			}
-			assertTimestampColumn(t, filepath.Join(opts.LocalOutputDir, "ts"))
+			assertTimestampColumn(t, filepath.Join(opts.OutputDir, "ts"))
 		})
 	}
 }

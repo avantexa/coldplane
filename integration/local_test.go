@@ -53,7 +53,7 @@ func TestLocalPostgresFlow(t *testing.T) {
 		defer cancel()
 
 		opts := archive.DefaultOptions()
-		opts.LocalOutputDir = backupDir
+		opts.OutputDir = backupDir
 
 		err := archive.ArchivePostgres(ctx, pgDSN, []string{"inttest_orders"}, backupName, opts)
 		if err != nil {
@@ -62,9 +62,9 @@ func TestLocalPostgresFlow(t *testing.T) {
 	})
 
 	t.Run("02_local_backup_list", func(t *testing.T) {
-		backups, err := archive.ListLocalBackups(backupDir)
+		backups, err := archive.ListBackups(backupDir)
 		if err != nil {
-			t.Fatalf("ListLocalBackups: %v", err)
+			t.Fatalf("ListBackups: %v", err)
 		}
 		if len(backups) == 0 {
 			t.Fatal("expected at least 1 local backup")
@@ -94,9 +94,9 @@ func TestLocalPostgresFlow(t *testing.T) {
 	t.Run("03_local_backup_manifest", func(t *testing.T) {
 		// The backup was created with a custom output dir, so resolve manually.
 		dir := backupDir + "/" + backupName
-		manifest, err := archive.ReadLocalManifest(dir)
+		manifest, err := archive.ReadManifest(dir)
 		if err != nil {
-			t.Fatalf("ReadLocalManifest: %v", err)
+			t.Fatalf("ReadManifest: %v", err)
 		}
 		if manifest.Name != backupName || manifest.DBType != "postgres" || !manifest.Local {
 			t.Errorf("manifest = %+v, want name %q, postgres, local", manifest, backupName)
@@ -112,9 +112,9 @@ func TestLocalPostgresFlow(t *testing.T) {
 			SQL:    "SELECT count(*) as cnt FROM restore_input",
 			Output: "json",
 		}
-		err := query.RunLocal(ctx, backupPath, opts)
+		err := query.Run(ctx, backupPath, opts)
 		if err != nil {
-			t.Fatalf("RunLocal count query failed: %v", err)
+			t.Fatalf("Run count query failed: %v", err)
 		}
 	})
 
@@ -127,9 +127,9 @@ func TestLocalPostgresFlow(t *testing.T) {
 			SQL:    "SELECT customer_name, amount FROM restore_input ORDER BY amount DESC LIMIT 2",
 			Output: "csv",
 		}
-		err := query.RunLocal(ctx, backupPath, opts)
+		err := query.Run(ctx, backupPath, opts)
 		if err != nil {
-			t.Fatalf("RunLocal select query failed: %v", err)
+			t.Fatalf("Run select query failed: %v", err)
 		}
 	})
 
@@ -142,9 +142,9 @@ func TestLocalPostgresFlow(t *testing.T) {
 			SQL:    "SELECT SUM(amount) as total, AVG(amount) as avg_amount FROM restore_input",
 			Output: "table",
 		}
-		err := query.RunLocal(ctx, backupPath, opts)
+		err := query.Run(ctx, backupPath, opts)
 		if err != nil {
-			t.Fatalf("RunLocal aggregation query failed: %v", err)
+			t.Fatalf("Run aggregation query failed: %v", err)
 		}
 	})
 }
@@ -171,7 +171,7 @@ func TestLocalMySQLFlow(t *testing.T) {
 		defer cancel()
 
 		opts := archive.DefaultOptions()
-		opts.LocalOutputDir = backupDir
+		opts.OutputDir = backupDir
 
 		// Normalize DSN like the CLI does
 		normalizedDSN := mysqlGoDSN
@@ -182,9 +182,9 @@ func TestLocalMySQLFlow(t *testing.T) {
 	})
 
 	t.Run("02_local_backup_list", func(t *testing.T) {
-		backups, err := archive.ListLocalBackups(backupDir)
+		backups, err := archive.ListBackups(backupDir)
 		if err != nil {
-			t.Fatalf("ListLocalBackups: %v", err)
+			t.Fatalf("ListBackups: %v", err)
 		}
 
 		found := false
@@ -214,9 +214,9 @@ func TestLocalMySQLFlow(t *testing.T) {
 			SQL:    "SELECT count(*) as cnt FROM restore_input",
 			Output: "json",
 		}
-		err := query.RunLocal(ctx, backupPath, opts)
+		err := query.Run(ctx, backupPath, opts)
 		if err != nil {
-			t.Fatalf("RunLocal count query failed: %v", err)
+			t.Fatalf("Run count query failed: %v", err)
 		}
 	})
 
@@ -229,9 +229,9 @@ func TestLocalMySQLFlow(t *testing.T) {
 			SQL:    "SELECT customer_name, amount FROM restore_input WHERE CAST(amount AS DECIMAL) > 100 ORDER BY amount",
 			Output: "table",
 		}
-		err := query.RunLocal(ctx, backupPath, opts)
+		err := query.Run(ctx, backupPath, opts)
 		if err != nil {
-			t.Fatalf("RunLocal filter query failed: %v", err)
+			t.Fatalf("Run filter query failed: %v", err)
 		}
 	})
 }
@@ -258,7 +258,7 @@ func TestLocalPostgresAllTypes(t *testing.T) {
 		defer cancel()
 
 		opts := archive.DefaultOptions()
-		opts.LocalOutputDir = backupDir
+		opts.OutputDir = backupDir
 
 		err := archive.ArchivePostgres(ctx, pgDSN, []string{"inttest_alltypes"}, backupName, opts)
 		if err != nil {
@@ -275,9 +275,9 @@ func TestLocalPostgresAllTypes(t *testing.T) {
 			SQL:    "SELECT count(*) as cnt FROM restore_input",
 			Output: "json",
 		}
-		err := query.RunLocal(ctx, backupPath, opts)
+		err := query.Run(ctx, backupPath, opts)
 		if err != nil {
-			t.Fatalf("RunLocal alltypes query failed: %v", err)
+			t.Fatalf("Run alltypes query failed: %v", err)
 		}
 	})
 
@@ -290,9 +290,9 @@ func TestLocalPostgresAllTypes(t *testing.T) {
 			SQL:    "SELECT id, col_varchar, col_boolean, col_bigint FROM restore_input WHERE id <= 5 ORDER BY id",
 			Output: "table",
 		}
-		err := query.RunLocal(ctx, backupPath, opts)
+		err := query.Run(ctx, backupPath, opts)
 		if err != nil {
-			t.Fatalf("RunLocal column select failed: %v", err)
+			t.Fatalf("Run column select failed: %v", err)
 		}
 	})
 }
@@ -319,7 +319,7 @@ func TestLocalMySQLAllTypes(t *testing.T) {
 		defer cancel()
 
 		opts := archive.DefaultOptions()
-		opts.LocalOutputDir = backupDir
+		opts.OutputDir = backupDir
 
 		normalizedDSN := mysqlGoDSN
 		err := archive.ArchiveMySQL(ctx, normalizedDSN, []string{"inttest_alltypes"}, backupName, opts)
@@ -337,9 +337,9 @@ func TestLocalMySQLAllTypes(t *testing.T) {
 			SQL:    "SELECT count(*) as cnt FROM restore_input",
 			Output: "json",
 		}
-		err := query.RunLocal(ctx, backupPath, opts)
+		err := query.Run(ctx, backupPath, opts)
 		if err != nil {
-			t.Fatalf("RunLocal MySQL alltypes query failed: %v", err)
+			t.Fatalf("Run MySQL alltypes query failed: %v", err)
 		}
 	})
 }
@@ -369,7 +369,7 @@ func TestLocalMultiTable(t *testing.T) {
 		defer cancel()
 
 		opts := archive.DefaultOptions()
-		opts.LocalOutputDir = backupDir
+		opts.OutputDir = backupDir
 
 		err := archive.ArchivePostgres(ctx, pgDSN, []string{"inttest_orders", "inttest_alltypes"}, backupName, opts)
 		if err != nil {
@@ -378,9 +378,9 @@ func TestLocalMultiTable(t *testing.T) {
 	})
 
 	t.Run("02_list_shows_both_tables", func(t *testing.T) {
-		backups, err := archive.ListLocalBackups(backupDir)
+		backups, err := archive.ListBackups(backupDir)
 		if err != nil {
-			t.Fatalf("ListLocalBackups: %v", err)
+			t.Fatalf("ListBackups: %v", err)
 		}
 
 		for _, b := range backups {
@@ -414,9 +414,9 @@ func TestLocalMultiTable(t *testing.T) {
 			SQL:    "SELECT count(*) as cnt FROM restore_input",
 			Output: "json",
 		}
-		err := query.RunLocal(ctx, backupPath, opts)
+		err := query.Run(ctx, backupPath, opts)
 		if err != nil {
-			t.Fatalf("RunLocal table-filtered query failed: %v", err)
+			t.Fatalf("Run table-filtered query failed: %v", err)
 		}
 	})
 
@@ -429,14 +429,14 @@ func TestLocalMultiTable(t *testing.T) {
 			SQL:    "SELECT count(*) as cnt FROM restore_input",
 			Output: "json",
 		}
-		err := query.RunLocal(ctx, backupPath, opts)
+		err := query.Run(ctx, backupPath, opts)
 		if err != nil {
 			// This may fail if schemas differ between tables — that is expected
 			// for heterogeneous multi-table backups queried together.
 			if strings.Contains(err.Error(), "mismatch") || strings.Contains(err.Error(), "schema") {
 				t.Skipf("Expected schema mismatch querying all tables together: %v", err)
 			}
-			t.Fatalf("RunLocal all-tables query failed: %v", err)
+			t.Fatalf("Run all-tables query failed: %v", err)
 		}
 	})
 }
@@ -672,7 +672,7 @@ func TestLocalBackupWithWhere_Postgres(t *testing.T) {
 		defer cancel()
 
 		opts := archive.DefaultOptions()
-		opts.LocalOutputDir = backupDir
+		opts.OutputDir = backupDir
 		opts.Where = "created_at < NOW() - INTERVAL '18 months'"
 
 		err := archive.ArchivePostgres(ctx, pgDSN, []string{"inttest_orders"}, backupName, opts)
@@ -690,9 +690,9 @@ func TestLocalBackupWithWhere_Postgres(t *testing.T) {
 			SQL:    "SELECT count(*) as cnt FROM restore_input",
 			Output: "json",
 		}
-		err := query.RunLocal(ctx, backupPath, opts)
+		err := query.Run(ctx, backupPath, opts)
 		if err != nil {
-			t.Fatalf("RunLocal query failed: %v", err)
+			t.Fatalf("Run query failed: %v", err)
 		}
 		// The output prints to stdout — we can't easily capture it here,
 		// but if it runs without error on 4 rows of filtered data, the
@@ -700,9 +700,9 @@ func TestLocalBackupWithWhere_Postgres(t *testing.T) {
 	})
 
 	t.Run("03_list_shows_backup", func(t *testing.T) {
-		backups, err := archive.ListLocalBackups(backupDir)
+		backups, err := archive.ListBackups(backupDir)
 		if err != nil {
-			t.Fatalf("ListLocalBackups: %v", err)
+			t.Fatalf("ListBackups: %v", err)
 		}
 		found := false
 		for _, b := range backups {
@@ -742,7 +742,7 @@ func TestLocalBackupWithWhere_MySQL(t *testing.T) {
 		defer cancel()
 
 		opts := archive.DefaultOptions()
-		opts.LocalOutputDir = backupDir
+		opts.OutputDir = backupDir
 		opts.Where = "created_at < DATE_SUB(NOW(), INTERVAL 18 MONTH)"
 
 		normalizedDSN := mysqlGoDSN
@@ -761,9 +761,9 @@ func TestLocalBackupWithWhere_MySQL(t *testing.T) {
 			SQL:    "SELECT count(*) as cnt FROM restore_input",
 			Output: "json",
 		}
-		err := query.RunLocal(ctx, backupPath, opts)
+		err := query.Run(ctx, backupPath, opts)
 		if err != nil {
-			t.Fatalf("RunLocal query failed: %v", err)
+			t.Fatalf("Run query failed: %v", err)
 		}
 	})
 }

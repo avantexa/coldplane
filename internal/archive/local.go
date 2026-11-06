@@ -7,8 +7,8 @@ import (
 	"sort"
 )
 
-// defaultLocalBackupDir returns the default directory for local backups.
-func defaultLocalBackupDir() string {
+// defaultBackupDir returns the default directory for local backups.
+func defaultBackupDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ".coldplane/backups"
@@ -16,8 +16,8 @@ func defaultLocalBackupDir() string {
 	return filepath.Join(home, ".coldplane", "backups")
 }
 
-// LocalBackupInfo holds metadata about a local backup, read from its index.json.
-type LocalBackupInfo struct {
+// BackupInfo holds metadata about a local backup, read from its index.json.
+type BackupInfo struct {
 	Name      string
 	DBType    string
 	DBName    string
@@ -27,10 +27,10 @@ type LocalBackupInfo struct {
 	Path      string
 }
 
-// ListLocalBackups scans the local backup directory and returns info for each backup.
-func ListLocalBackups(baseDir string) ([]LocalBackupInfo, error) {
+// ListBackups scans the local backup directory and returns info for each backup.
+func ListBackups(baseDir string) ([]BackupInfo, error) {
 	if baseDir == "" {
-		baseDir = defaultLocalBackupDir()
+		baseDir = defaultBackupDir()
 	}
 
 	entries, err := os.ReadDir(baseDir)
@@ -41,13 +41,13 @@ func ListLocalBackups(baseDir string) ([]LocalBackupInfo, error) {
 		return nil, fmt.Errorf("read backup dir: %w", err)
 	}
 
-	var backups []LocalBackupInfo
+	var backups []BackupInfo
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
 		dir := filepath.Join(baseDir, entry.Name())
-		manifest, err := ReadLocalManifest(dir)
+		manifest, err := ReadManifest(dir)
 		if err != nil {
 			continue // not a backup, or an unreadable one
 		}
@@ -62,8 +62,8 @@ func ListLocalBackups(baseDir string) ([]LocalBackupInfo, error) {
 
 // backupInfoFromManifest summarizes a parsed index.json; the directory name
 // stands in when the manifest has no name.
-func backupInfoFromManifest(m Manifest, dir string) LocalBackupInfo {
-	info := LocalBackupInfo{
+func backupInfoFromManifest(m Manifest, dir string) BackupInfo {
+	info := BackupInfo{
 		Name:      m.Name,
 		Path:      dir,
 		DBType:    m.DBType,
@@ -78,27 +78,27 @@ func backupInfoFromManifest(m Manifest, dir string) LocalBackupInfo {
 	return info
 }
 
-// ResolveLocalBackupDir resolves a backup name or path to the backup directory.
-func ResolveLocalBackupDir(nameOrPath string) string {
+// ResolveBackupDir resolves a backup name or path to the backup directory.
+func ResolveBackupDir(nameOrPath string) string {
 	// If it looks like an absolute path, use it directly
 	if filepath.IsAbs(nameOrPath) {
 		return nameOrPath
 	}
-	return filepath.Join(defaultLocalBackupDir(), nameOrPath)
+	return filepath.Join(defaultBackupDir(), nameOrPath)
 }
 
-// DeleteLocalBackup removes a local backup directory by name or path.
-func DeleteLocalBackup(nameOrPath string) error {
-	dir := ResolveLocalBackupDir(nameOrPath)
+// DeleteBackup removes a local backup directory by name or path.
+func DeleteBackup(nameOrPath string) error {
+	dir := ResolveBackupDir(nameOrPath)
 
 	// Verify it's actually a backup (has index.json) before deleting
 	if _, err := os.Stat(filepath.Join(dir, "index.json")); os.IsNotExist(err) {
-		return fmt.Errorf("local backup %q not found", nameOrPath)
+		return fmt.Errorf("backup %q not found", nameOrPath)
 	}
 
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("delete local backup: %w", err)
 	}
-	fmt.Printf("Deleted local backup: %s\n", dir)
+	fmt.Printf("Deleted backup: %s\n", dir)
 	return nil
 }

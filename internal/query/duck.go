@@ -27,16 +27,16 @@ type QueryOptions struct {
 	Output string // Output format: "table" (default), "json", or "csv"
 }
 
-// RunLocal executes a SQL query against a backup's Parquet files using DuckDB.
-func RunLocal(ctx context.Context, backupNameOrPath string, opts QueryOptions) error {
-	backupDir := archive.ResolveLocalBackupDir(backupNameOrPath)
+// Run executes a SQL query against a backup's Parquet files using DuckDB.
+func Run(ctx context.Context, backupNameOrPath string, opts QueryOptions) error {
+	backupDir := archive.ResolveBackupDir(backupNameOrPath)
 
-	manifest, err := archive.ReadLocalManifest(backupDir)
+	manifest, err := archive.ReadManifest(backupDir)
 	if err != nil {
-		return fmt.Errorf("local backup %q: %w. Run 'coldplane backup list' to see available backups", backupNameOrPath, err)
+		return fmt.Errorf("backup %q: %w. Run 'coldplane backup list' to see available backups", backupNameOrPath, err)
 	}
 
-	parquetFiles := collectLocalParquetFiles(backupDir, manifest, opts.Table)
+	parquetFiles := collectParquetFiles(backupDir, manifest, opts.Table)
 	if len(parquetFiles) == 0 {
 		return noFilesError(backupNameOrPath, opts.Table)
 	}
@@ -119,10 +119,10 @@ func queryRows(ctx context.Context, db *sql.DB, sqlText string) ([]map[string]in
 	return results, nil
 }
 
-// collectLocalParquetFiles returns the backup's Parquet files, optionally
+// collectParquetFiles returns the backup's Parquet files, optionally
 // limited to one table: the manifest's files when they exist on disk, else
 // whatever .parquet files a directory walk finds.
-func collectLocalParquetFiles(backupDir string, manifest archive.Manifest, tableName string) []string {
+func collectParquetFiles(backupDir string, manifest archive.Manifest, tableName string) []string {
 	files := manifestParquetFiles(backupDir, manifest.Tables, tableName)
 	if len(files) == 0 {
 		searchDir := backupDir

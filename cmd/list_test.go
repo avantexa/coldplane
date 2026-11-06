@@ -10,13 +10,13 @@ import (
 
 func TestRenderLocalBackups(t *testing.T) {
 	var buf bytes.Buffer
-	renderLocalBackups(&buf, nil)
+	renderBackups(&buf, nil)
 	if buf.String() != "No backups found.\n" {
 		t.Errorf("empty: %q", buf.String())
 	}
 
 	buf.Reset()
-	renderLocalBackups(&buf, []archive.LocalBackupInfo{{
+	renderBackups(&buf, []archive.BackupInfo{{
 		Name: "orders_x", DBName: "shop", DBType: "postgres", Tables: []string{"orders", "items"},
 		CreatedAt: "2025-01-01T00:00:00Z", SizeBytes: 3 << 20, Path: "/b/orders_x",
 	}})

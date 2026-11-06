@@ -17,14 +17,14 @@ coldplane/
 │   ├── archive/               # Database → Parquet archiving
 │   │   ├── postgres.go        # ArchivePostgres: chunking + Parquet writing (pgx)
 │   │   ├── mysql.go           # ArchiveMySQL: chunking + Parquet writing
-│   │   ├── options.go         # ArchiveOptions (ChunkSize, Workers, LocalOutputDir, Where)
+│   │   ├── options.go         # ArchiveOptions (ChunkSize, Workers, OutputDir, Where)
 │   │   ├── filestore.go       # FileStore interface + LocalFileStore
 │   │   ├── manifest.go        # Manifest/TableEntry/FileEntry types, index.json read/write
 │   │   ├── local.go           # Backup directory helpers (list, delete, resolve)
 │   │   └── utils.go           # Schema inference, value sanitizing, ProgressTracker
 │   ├── dbutil/                # Shared SQL helpers: identifier quoting, time parsing, DB name from DSN
 │   ├── query/
-│   │   └── duck.go            # RunLocal: DuckDB in-memory view over the backup's Parquet files
+│   │   └── duck.go            # Run: DuckDB in-memory view over the backup's Parquet files
 │   └── term/
 │       └── color.go           # Terminal color utilities
 ├── integration/               # Integration tests against Docker databases (build tag: integration)

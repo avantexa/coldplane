@@ -173,9 +173,9 @@ func TestPrintQueryResults_TableFormatNilValue(t *testing.T) {
 	}
 }
 
-// --- collectLocalParquetFiles tests ---
+// --- collectParquetFiles tests ---
 
-func TestCollectLocalParquetFiles_FromManifest(t *testing.T) {
+func TestCollectParquetFiles_FromManifest(t *testing.T) {
 	dir := t.TempDir()
 	tableDir := filepath.Join(dir, "orders", "year=2025", "month=01")
 	os.MkdirAll(tableDir, 0755)
@@ -186,13 +186,13 @@ func TestCollectLocalParquetFiles_FromManifest(t *testing.T) {
 		Name:  "orders",
 		Files: []archive.FileEntry{{Key: "orders/year=2025/month=01/orders-chunk-0-part-0.parquet", SizeBytes: 4}},
 	}}}
-	files := collectLocalParquetFiles(dir, manifest, "")
+	files := collectParquetFiles(dir, manifest, "")
 	if len(files) != 1 || files[0] != f1 {
 		t.Errorf("got %v, want [%s]", files, f1)
 	}
 }
 
-func TestCollectLocalParquetFiles_FilterByTable(t *testing.T) {
+func TestCollectParquetFiles_FilterByTable(t *testing.T) {
 	dir := t.TempDir()
 	for _, table := range []string{"orders", "users"} {
 		os.MkdirAll(filepath.Join(dir, table), 0755)
@@ -202,13 +202,13 @@ func TestCollectLocalParquetFiles_FilterByTable(t *testing.T) {
 		{Name: "orders", Files: []archive.FileEntry{{Key: "orders/orders-chunk-0.parquet", SizeBytes: 4}}},
 		{Name: "users", Files: []archive.FileEntry{{Key: "users/users-chunk-0.parquet", SizeBytes: 4}}},
 	}}
-	files := collectLocalParquetFiles(dir, manifest, "orders")
+	files := collectParquetFiles(dir, manifest, "orders")
 	if len(files) != 1 || !strings.Contains(files[0], "orders") {
 		t.Errorf("expected only the orders file, got %v", files)
 	}
 }
 
-func TestCollectLocalParquetFiles_FallbackToWalk(t *testing.T) {
+func TestCollectParquetFiles_FallbackToWalk(t *testing.T) {
 	dir := t.TempDir()
 	tableDir := filepath.Join(dir, "events", "year=2025")
 	os.MkdirAll(tableDir, 0755)
@@ -217,18 +217,18 @@ func TestCollectLocalParquetFiles_FallbackToWalk(t *testing.T) {
 
 	// A manifest that lists no files falls back to walking the directory.
 	manifest := archive.Manifest{Tables: []archive.TableEntry{{Name: "events"}}}
-	if files := collectLocalParquetFiles(dir, manifest, ""); len(files) != 2 {
+	if files := collectParquetFiles(dir, manifest, ""); len(files) != 2 {
 		t.Errorf("expected 2 files from walk fallback, got %v", files)
 	}
 	// So does a manifest with no tables at all.
-	if files := collectLocalParquetFiles(dir, archive.Manifest{}, ""); len(files) != 2 {
+	if files := collectParquetFiles(dir, archive.Manifest{}, ""); len(files) != 2 {
 		t.Errorf("no tables: expected 2 files from walk fallback, got %v", files)
 	}
 }
 
-func TestCollectLocalParquetFiles_NoFiles(t *testing.T) {
+func TestCollectParquetFiles_NoFiles(t *testing.T) {
 	manifest := archive.Manifest{Tables: []archive.TableEntry{{Name: "empty_table"}}}
-	if files := collectLocalParquetFiles(t.TempDir(), manifest, ""); len(files) != 0 {
+	if files := collectParquetFiles(t.TempDir(), manifest, ""); len(files) != 0 {
 		t.Errorf("expected 0 files, got %v", files)
 	}
 }

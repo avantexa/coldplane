@@ -199,8 +199,8 @@ func TestDefaultOptions(t *testing.T) {
 	if opts.Workers != 4 {
 		t.Errorf("Workers = %d, want 4", opts.Workers)
 	}
-	if opts.LocalOutputDir != "" {
-		t.Errorf("LocalOutputDir should default to empty, got %q", opts.LocalOutputDir)
+	if opts.OutputDir != "" {
+		t.Errorf("OutputDir should default to empty, got %q", opts.OutputDir)
 	}
 	if opts.Where != "" {
 		t.Errorf("Where should default to empty, got %q", opts.Where)

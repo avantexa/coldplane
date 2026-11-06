@@ -45,9 +45,9 @@ func (m Manifest) TableNames() []string {
 
 // backupDirFor returns the directory a named backup is written to.
 func backupDirFor(opts ArchiveOptions, name string) string {
-	baseDir := opts.LocalOutputDir
+	baseDir := opts.OutputDir
 	if baseDir == "" {
-		baseDir = defaultLocalBackupDir()
+		baseDir = defaultBackupDir()
 	}
 	return path.Join(baseDir, name)
 }
@@ -109,8 +109,8 @@ func writeManifest(backupDir string, m Manifest) error {
 	return os.WriteFile(filepath.Join(backupDir, "index.json"), data, 0644)
 }
 
-// ReadLocalManifest reads and parses the index.json of a backup directory.
-func ReadLocalManifest(backupDir string) (Manifest, error) {
+// ReadManifest reads and parses the index.json of a backup directory.
+func ReadManifest(backupDir string) (Manifest, error) {
 	data, err := os.ReadFile(filepath.Join(backupDir, "index.json"))
 	if err != nil {
 		return Manifest{}, fmt.Errorf("read manifest: %w", err)

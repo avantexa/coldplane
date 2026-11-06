@@ -42,7 +42,7 @@ func TestWriteBackupManifest_RoundTrip(t *testing.T) {
 	if total != 150 {
 		t.Errorf("total = %d, want 150", total)
 	}
-	m, err := ReadLocalManifest(dir)
+	m, err := ReadManifest(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,13 +82,13 @@ func TestWriteBackupManifest_UnwritableDir(t *testing.T) {
 	}
 }
 
-func TestReadLocalManifest_Errors(t *testing.T) {
-	if _, err := ReadLocalManifest(t.TempDir()); err == nil {
+func TestReadManifest_Errors(t *testing.T) {
+	if _, err := ReadManifest(t.TempDir()); err == nil {
 		t.Error("missing index.json should fail")
 	}
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "index.json"), []byte("{not json"), 0644)
-	if _, err := ReadLocalManifest(dir); err == nil {
+	if _, err := ReadManifest(dir); err == nil {
 		t.Error("corrupt index.json should fail")
 	}
 }
@@ -105,9 +105,9 @@ func containsBytes(data []byte, s string) bool {
 }
 
 func TestPrepareBackupDir(t *testing.T) {
-	opts := ArchiveOptions{LocalOutputDir: t.TempDir()}
+	opts := ArchiveOptions{OutputDir: t.TempDir()}
 	dir, err := prepareBackupDir(opts, "fresh")
-	if err != nil || dir != filepath.Join(opts.LocalOutputDir, "fresh") {
+	if err != nil || dir != filepath.Join(opts.OutputDir, "fresh") {
 		t.Fatalf("fresh: %q %v", dir, err)
 	}
 	if err := os.MkdirAll(dir, 0755); err != nil {

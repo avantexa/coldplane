@@ -6,10 +6,10 @@ import (
 	"testing"
 )
 
-func TestDefaultLocalBackupDir(t *testing.T) {
-	dir := defaultLocalBackupDir()
+func TestDefaultBackupDir(t *testing.T) {
+	dir := defaultBackupDir()
 	if dir == "" {
-		t.Fatal("defaultLocalBackupDir returned empty string")
+		t.Fatal("defaultBackupDir returned empty string")
 	}
 	if !filepath.IsAbs(dir) {
 		// On systems where UserHomeDir works, it should be absolute
@@ -24,28 +24,28 @@ func TestDefaultLocalBackupDir(t *testing.T) {
 	}
 }
 
-func TestListLocalBackups_EmptyDir(t *testing.T) {
+func TestListBackups_EmptyDir(t *testing.T) {
 	dir := t.TempDir()
-	backups, err := ListLocalBackups(dir)
+	backups, err := ListBackups(dir)
 	if err != nil {
-		t.Fatalf("ListLocalBackups failed: %v", err)
+		t.Fatalf("ListBackups failed: %v", err)
 	}
 	if len(backups) != 0 {
 		t.Errorf("expected 0 backups, got %d", len(backups))
 	}
 }
 
-func TestListLocalBackups_NonExistentDir(t *testing.T) {
-	backups, err := ListLocalBackups("/nonexistent/path/12345")
+func TestListBackups_NonExistentDir(t *testing.T) {
+	backups, err := ListBackups("/nonexistent/path/12345")
 	if err != nil {
-		t.Fatalf("ListLocalBackups should not error on missing dir: %v", err)
+		t.Fatalf("ListBackups should not error on missing dir: %v", err)
 	}
 	if backups != nil {
 		t.Errorf("expected nil backups, got %d", len(backups))
 	}
 }
 
-func TestListLocalBackups_WithBackups(t *testing.T) {
+func TestListBackups_WithBackups(t *testing.T) {
 	dir := t.TempDir()
 
 	// Create two backup directories with manifests
@@ -62,9 +62,9 @@ func TestListLocalBackups_WithBackups(t *testing.T) {
 	// Create a non-backup directory (no index.json)
 	os.MkdirAll(filepath.Join(dir, "not_a_backup"), 0755)
 
-	backups, err := ListLocalBackups(dir)
+	backups, err := ListBackups(dir)
 	if err != nil {
-		t.Fatalf("ListLocalBackups failed: %v", err)
+		t.Fatalf("ListBackups failed: %v", err)
 	}
 	if len(backups) != 2 {
 		t.Fatalf("expected 2 backups, got %d", len(backups))
@@ -92,22 +92,22 @@ func TestListLocalBackups_WithBackups(t *testing.T) {
 	}
 }
 
-func TestResolveLocalBackupDir_AbsolutePath(t *testing.T) {
-	got := ResolveLocalBackupDir("/tmp/my_backup")
+func TestResolveBackupDir_AbsolutePath(t *testing.T) {
+	got := ResolveBackupDir("/tmp/my_backup")
 	if got != "/tmp/my_backup" {
 		t.Errorf("expected /tmp/my_backup, got %q", got)
 	}
 }
 
-func TestResolveLocalBackupDir_RelativeName(t *testing.T) {
-	got := ResolveLocalBackupDir("my_backup")
-	expected := filepath.Join(defaultLocalBackupDir(), "my_backup")
+func TestResolveBackupDir_RelativeName(t *testing.T) {
+	got := ResolveBackupDir("my_backup")
+	expected := filepath.Join(defaultBackupDir(), "my_backup")
 	if got != expected {
 		t.Errorf("got %q, want %q", got, expected)
 	}
 }
 
-func TestDeleteLocalBackup(t *testing.T) {
+func TestDeleteBackup(t *testing.T) {
 	dir := t.TempDir()
 	backupName := "to_delete"
 
@@ -116,9 +116,9 @@ func TestDeleteLocalBackup(t *testing.T) {
 	}
 
 	// Delete using absolute path
-	err := DeleteLocalBackup(filepath.Join(dir, backupName))
+	err := DeleteBackup(filepath.Join(dir, backupName))
 	if err != nil {
-		t.Fatalf("DeleteLocalBackup failed: %v", err)
+		t.Fatalf("DeleteBackup failed: %v", err)
 	}
 
 	// Verify directory is gone
@@ -128,7 +128,7 @@ func TestDeleteLocalBackup(t *testing.T) {
 }
 
 func TestDeleteLocalBackup_NotFound(t *testing.T) {
-	err := DeleteLocalBackup("/nonexistent/path/fake_backup")
+	err := DeleteBackup("/nonexistent/path/fake_backup")
 	if err == nil {
 		t.Error("expected error for missing backup")
 	}

@@ -136,21 +136,21 @@ var backupListCmd = &cobra.Command{
 	Aliases: []string{"ls"},
 	Short:   "List existing backups",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return listLocalBackups()
+		return listBackups()
 	},
 }
 
-func listLocalBackups() error {
-	backups, err := archive.ListLocalBackups("")
+func listBackups() error {
+	backups, err := archive.ListBackups("")
 	if err != nil {
 		return err
 	}
-	renderLocalBackups(os.Stdout, backups)
+	renderBackups(os.Stdout, backups)
 	return nil
 }
 
-// renderLocalBackups prints the backups as a table, newest first.
-func renderLocalBackups(w io.Writer, backups []archive.LocalBackupInfo) {
+// renderBackups prints the backups as a table, newest first.
+func renderBackups(w io.Writer, backups []archive.BackupInfo) {
 	if len(backups) == 0 {
 		fmt.Fprintln(w, "No backups found.")
 		return
@@ -179,7 +179,7 @@ var backupDeleteCmd = &cobra.Command{
 	Args:    cobra.ExactArgs(1),
 	Short:   "Delete a backup",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return archive.DeleteLocalBackup(args[0])
+		return archive.DeleteBackup(args[0])
 	},
 }
 
@@ -220,7 +220,7 @@ var queryRunCmd = &cobra.Command{
 		}
 
 		fmt.Println(term.Cyan("Running query against archived backup..."))
-		if err := query.RunLocal(ctx, backupID, opts); err != nil {
+		if err := query.Run(ctx, backupID, opts); err != nil {
 			return fmt.Errorf("%s: %w", term.ColorError("query failed"), err)
 		}
 		return nil
