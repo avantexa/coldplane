@@ -32,8 +32,8 @@ func archivePostgresTable(ctx context.Context, pool *pgxpool.Pool, store FileSto
 		return nil, partitionColumnUsed, err
 	}
 
-	var uploadedKeysMu sync.Mutex
-	var uploadedKeys []map[string]interface{}
+	var entriesMu sync.Mutex
+	var entries []map[string]interface{}
 	err = runChunks(n, opts.Workers, func(i int) error {
 		dbConn, err := pool.Acquire(ctx)
 		if err != nil {
@@ -41,26 +41,26 @@ func archivePostgresTable(ctx context.Context, pool *pgxpool.Pool, store FileSto
 		}
 		defer dbConn.Release()
 		q, args := query(i)
-		entries, err := processPostgresChunkGeneric(ctx, dbConn.Conn(), q, args, table, i, partitionColumnUsed, store, progress)
+		got, err := processPostgresChunkGeneric(ctx, dbConn.Conn(), q, args, table, i, partitionColumnUsed, store, progress)
 		if err != nil {
 			return err
 		}
-		uploadedKeysMu.Lock()
-		uploadedKeys = append(uploadedKeys, entries...)
-		uploadedKeysMu.Unlock()
+		entriesMu.Lock()
+		entries = append(entries, got...)
+		entriesMu.Unlock()
 		return nil
 	})
 	if err != nil {
-		return uploadedKeys, partitionColumnUsed, err
+		return entries, partitionColumnUsed, err
 	}
 	fmt.Printf("[summary] Table %s: %d rows archived in %d chunks\n", table, progress.DoneRows, progress.DoneChunks)
-	return uploadedKeys, partitionColumnUsed, nil
+	return entries, partitionColumnUsed, nil
 }
 
 // pgChunkPlan detects the chunking column and plans the chunks for it,
 // returning the chunk count and the per-chunk query builder.
 func pgChunkPlan(ctx context.Context, conn *pgxpool.Conn, table, where string, chunkSize int, progress *ProgressTracker) (int, func(int) (string, []interface{}), error) {
-	hasTime, timeColumn, hasID, idColumn, err := DetectPostgresChunkingColumn(ctx, conn.Conn(), table)
+	hasTime, timeColumn, hasID, idColumn, err := detectPostgresChunkingColumn(ctx, conn.Conn(), table)
 	if err != nil {
 		return 0, nil, fmt.Errorf("failed to detect chunk column: %w", err)
 	}
@@ -242,9 +242,9 @@ func parseAnyTime(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("could not parse time: %q", s)
 }
 
-// DetectPostgresChunkingColumn picks the best chunking column: the first
+// detectPostgresChunkingColumn picks the best chunking column: the first
 // date/timestamp column, then an integer primary key, else none (OFFSET/LIMIT).
-func DetectPostgresChunkingColumn(ctx context.Context, conn *pgx.Conn, table string) (hasTime bool, timeColumn string, hasID bool, idColumn string, err error) {
+func detectPostgresChunkingColumn(ctx context.Context, conn *pgx.Conn, table string) (hasTime bool, timeColumn string, hasID bool, idColumn string, err error) {
 	col, err := pgFirstTimestampColumn(ctx, conn, table)
 	if err != nil {
 		return false, "", false, "", err

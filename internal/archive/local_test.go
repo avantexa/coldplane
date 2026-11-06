@@ -8,9 +8,9 @@ import (
 )
 
 func TestDefaultLocalBackupDir(t *testing.T) {
-	dir := DefaultLocalBackupDir()
+	dir := defaultLocalBackupDir()
 	if dir == "" {
-		t.Fatal("DefaultLocalBackupDir returned empty string")
+		t.Fatal("defaultLocalBackupDir returned empty string")
 	}
 	if !filepath.IsAbs(dir) {
 		// On systems where UserHomeDir works, it should be absolute
@@ -38,9 +38,9 @@ func TestWriteLocalManifest(t *testing.T) {
 		"local":      true,
 	}
 
-	err := WriteLocalManifest(backupDir, manifest)
+	err := writeLocalManifest(backupDir, manifest)
 	if err != nil {
-		t.Fatalf("WriteLocalManifest failed: %v", err)
+		t.Fatalf("writeLocalManifest failed: %v", err)
 	}
 
 	// Verify the file was created
@@ -70,9 +70,9 @@ func TestWriteLocalManifest_CreatesDir(t *testing.T) {
 	backupDir := filepath.Join(dir, "deeply", "nested", "backup")
 
 	manifest := map[string]interface{}{"name": "test"}
-	err := WriteLocalManifest(backupDir, manifest)
+	err := writeLocalManifest(backupDir, manifest)
 	if err != nil {
-		t.Fatalf("WriteLocalManifest failed: %v", err)
+		t.Fatalf("writeLocalManifest failed: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(backupDir, "index.json")); os.IsNotExist(err) {
 		t.Error("index.json was not created in nested directory")
@@ -116,7 +116,7 @@ func TestListLocalBackups_WithBackups(t *testing.T) {
 				map[string]interface{}{"name": "users"},
 			},
 		}
-		if err := WriteLocalManifest(filepath.Join(dir, name), manifest); err != nil {
+		if err := writeLocalManifest(filepath.Join(dir, name), manifest); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -163,7 +163,7 @@ func TestResolveLocalBackupDir_AbsolutePath(t *testing.T) {
 
 func TestResolveLocalBackupDir_RelativeName(t *testing.T) {
 	got := ResolveLocalBackupDir("my_backup")
-	expected := filepath.Join(DefaultLocalBackupDir(), "my_backup")
+	expected := filepath.Join(defaultLocalBackupDir(), "my_backup")
 	if got != expected {
 		t.Errorf("got %q, want %q", got, expected)
 	}
@@ -175,7 +175,7 @@ func TestReadLocalManifest(t *testing.T) {
 		"name":    "test_backup",
 		"db_type": "mysql",
 	}
-	if err := WriteLocalManifest(dir, manifest); err != nil {
+	if err := writeLocalManifest(dir, manifest); err != nil {
 		t.Fatal(err)
 	}
 
@@ -203,7 +203,7 @@ func TestDeleteLocalBackup(t *testing.T) {
 	backupName := "to_delete"
 
 	manifest := map[string]interface{}{"name": backupName, "db_type": "postgres"}
-	if err := WriteLocalManifest(filepath.Join(dir, backupName), manifest); err != nil {
+	if err := writeLocalManifest(filepath.Join(dir, backupName), manifest); err != nil {
 		t.Fatal(err)
 	}
 

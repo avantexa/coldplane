@@ -49,30 +49,30 @@ func archiveTable(ctx context.Context, db *sql.DB, store FileStore, table, where
 		return nil, partitionColumnUsed, err
 	}
 
-	var uploadedKeysMu sync.Mutex
-	var uploadedKeys []map[string]interface{}
+	var entriesMu sync.Mutex
+	var entries []map[string]interface{}
 	err = runChunks(n, opts.Workers, func(i int) error {
-		entries, err := processMySQLChunkGeneric(ctx, db, query(i), table, i, partitionColumnUsed, store, progress)
+		got, err := processMySQLChunkGeneric(ctx, db, query(i), table, i, partitionColumnUsed, store, progress)
 		if err != nil {
 			return err
 		}
-		uploadedKeysMu.Lock()
-		uploadedKeys = append(uploadedKeys, entries...)
-		uploadedKeysMu.Unlock()
+		entriesMu.Lock()
+		entries = append(entries, got...)
+		entriesMu.Unlock()
 		return nil
 	})
 	if err != nil {
 		return nil, partitionColumnUsed, err
 	}
 	fmt.Printf("[summary] Table %s: %d rows archived in %d chunks\n", table, progress.DoneRows, progress.DoneChunks)
-	return uploadedKeys, partitionColumnUsed, nil
+	return entries, partitionColumnUsed, nil
 }
 
 // mysqlChunkPlan detects the chunking column and plans the chunks for it,
 // returning the chunk count and the per-chunk query builder. In the
 // OFFSET/LIMIT fallback it also tries the schema for a partition column.
 func mysqlChunkPlan(db *sql.DB, table, where string, chunkSize int, progress *ProgressTracker, partitionColumn *string) (int, func(int) string, error) {
-	hasID, idColumn, hasTime, timeColumn, err := DetectChunkingColumn(db, table)
+	hasID, idColumn, hasTime, timeColumn, err := detectChunkingColumn(db, table)
 	if err != nil {
 		return 0, nil, fmt.Errorf("[archive-mysql] failed to detect chunk column: %w", err)
 	}
@@ -229,9 +229,9 @@ func processMySQLChunkGeneric(ctx context.Context, db *sql.DB, query, table stri
 	return writeChunk(ctx, src, table, chunkNum, partitionColumn, store, progress)
 }
 
-// DetectChunkingColumn picks the best chunking column: a numeric primary
+// detectChunkingColumn picks the best chunking column: a numeric primary
 // key first, then the first DATETIME/TIMESTAMP column, else none (OFFSET/LIMIT).
-func DetectChunkingColumn(db *sql.DB, table string) (hasID bool, idColumn string, hasTime bool, timeColumn string, err error) {
+func detectChunkingColumn(db *sql.DB, table string) (hasID bool, idColumn string, hasTime bool, timeColumn string, err error) {
 	if col := mysqlNumericPrimaryKey(db, table); col != "" {
 		return true, col, false, "", nil
 	}

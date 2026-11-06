@@ -8,8 +8,8 @@ import (
 	"sort"
 )
 
-// DefaultLocalBackupDir returns the default directory for local backups.
-func DefaultLocalBackupDir() string {
+// defaultLocalBackupDir returns the default directory for local backups.
+func defaultLocalBackupDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ".coldplane/backups"
@@ -17,8 +17,8 @@ func DefaultLocalBackupDir() string {
 	return filepath.Join(home, ".coldplane", "backups")
 }
 
-// WriteLocalManifest writes an index.json manifest to a local backup directory.
-func WriteLocalManifest(backupDir string, manifest map[string]interface{}) error {
+// writeLocalManifest writes an index.json manifest to a local backup directory.
+func writeLocalManifest(backupDir string, manifest map[string]interface{}) error {
 	if err := os.MkdirAll(backupDir, 0755); err != nil {
 		return fmt.Errorf("create backup dir: %w", err)
 	}
@@ -43,7 +43,7 @@ type LocalBackupInfo struct {
 // ListLocalBackups scans the local backup directory and returns info for each backup.
 func ListLocalBackups(baseDir string) ([]LocalBackupInfo, error) {
 	if baseDir == "" {
-		baseDir = DefaultLocalBackupDir()
+		baseDir = defaultLocalBackupDir()
 	}
 
 	entries, err := os.ReadDir(baseDir)
@@ -126,7 +126,7 @@ func ResolveLocalBackupDir(nameOrPath string) string {
 	if filepath.IsAbs(nameOrPath) {
 		return nameOrPath
 	}
-	return filepath.Join(DefaultLocalBackupDir(), nameOrPath)
+	return filepath.Join(defaultLocalBackupDir(), nameOrPath)
 }
 
 // DeleteLocalBackup removes a local backup directory by name or path.

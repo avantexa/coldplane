@@ -9,7 +9,7 @@ import (
 func backupDirFor(opts ArchiveOptions, name string) string {
 	baseDir := opts.LocalOutputDir
 	if baseDir == "" {
-		baseDir = DefaultLocalBackupDir()
+		baseDir = defaultLocalBackupDir()
 	}
 	return path.Join(baseDir, name)
 }
@@ -66,7 +66,7 @@ func writeBackupManifest(backupDir, name, dbType, dbName string, tables []map[st
 		"size_bytes": total,
 		"local":      true,
 	}
-	if err := WriteLocalManifest(backupDir, manifest); err != nil {
+	if err := writeLocalManifest(backupDir, manifest); err != nil {
 		return 0, err
 	}
 	return total, nil
