@@ -15,12 +15,17 @@ coldplane/
 ├── internal/
 │   ├── analyze/               # Age analysis: find rows older than a threshold per table
 │   ├── archive/               # Database → Parquet archiving
-│   │   ├── postgres.go        # ArchivePostgres: chunking + Parquet writing (pgx)
-│   │   ├── mysql.go           # ArchiveMySQL: chunking + Parquet writing
+│   │   ├── postgres.go        # ArchivePostgres: Postgres chunk detection, planners, runner
+│   │   ├── mysql.go           # ArchiveMySQL: MySQL chunk detection, planners, runner
+│   │   ├── chunking.go        # chunkKind/chunkPlan/chunkRunner, planners, runChunks, shared archiveTable
+│   │   ├── chunkwriter.go     # rowSource + colKind (driver-typed columns), writeChunk, sql/pgx adapters
+│   │   ├── partwriter.go      # partitionKey, rowToMap, partitioned Parquet writer, storeParts
+│   │   ├── queries.go         # SQL text for both engines (bound arguments)
+│   │   ├── partition.go       # timeValue, firstTimeColumn
+│   │   ├── manifest.go        # Manifest/TableEntry/FileEntry, index.json read/write, backup dir rules
+│   │   ├── local.go           # ListBackups, DeleteBackup, ResolveBackupDir
 │   │   ├── options.go         # ArchiveOptions (ChunkSize, Workers, OutputDir, Where)
 │   │   ├── filestore.go       # FileStore interface + LocalFileStore
-│   │   ├── manifest.go        # Manifest/TableEntry/FileEntry types, index.json read/write
-│   │   ├── local.go           # Backup directory helpers (list, delete, resolve)
 │   │   └── utils.go           # Schema inference, value sanitizing, ProgressTracker
 │   ├── dbutil/                # Shared SQL helpers: identifier quoting, time parsing, DB name from DSN
 │   ├── query/
@@ -80,6 +85,8 @@ go build -o coldplane      # cgo must be enabled (DuckDB); no extra libraries ne
 - Standard Go formatting (`gofmt`); PascalCase exported, camelCase unexported; lowercase single-word packages.
 - Wrap errors with context: `fmt.Errorf("action failed: %w", err)`.
 - `FileStore` interface decouples where Parquet files land. Only `LocalFileStore` exists today; keep the interface so an S3-compatible store can be added.
+- Engines differ only in `chunkRunner`, the chunk-column detector and the planners; everything after a `chunkPlan` is shared (`archiveTable` -> `writeChunk` -> `partitionedWriter`). Keep it that way when adding an engine.
+- Parquet column types come from driver metadata (`colKind`) first and the first value second. A new backup refuses to reuse an existing backup directory; a failed one is removed.
 - Progress tracking via the mutex-guarded `ProgressTracker`; worker pools and channel streaming for chunked reads.
 - All long-running operations accept `context.Context`.
 - Keep PostgreSQL and MySQL implementations in parity when changing one.
