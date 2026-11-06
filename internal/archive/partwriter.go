@@ -45,16 +45,16 @@ func indexOf(columns []string, name string) int {
 
 // rowToMap converts a scanned row into the JSON object the Parquet writer
 // consumes. nil values are omitted so they become NULLs, []byte become
-// strings, columns flagged in timestampCols become UTC epoch milliseconds,
-// and everything else goes through toParquetSafeValue.
-func rowToMap(columns []string, values []interface{}, timestampCols map[int]bool) map[string]interface{} {
+// strings, kindTime columns become UTC epoch milliseconds, and everything
+// else goes through toParquetSafeValue.
+func rowToMap(columns []string, values []interface{}, kinds []colKind) map[string]interface{} {
 	m := make(map[string]interface{}, len(columns))
 	for i, name := range columns {
 		val := valueAt(values, i)
 		if val == nil {
 			continue
 		}
-		if timestampCols[i] {
+		if i < len(kinds) && kinds[i] == kindTime {
 			if ms, ok := epochMillis(val); ok {
 				m[name] = ms
 			} else if _, isText := val.(string); !isText {

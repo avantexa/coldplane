@@ -203,18 +203,31 @@ func ArchivePostgres(ctx context.Context, dbURL string, tables []string, name st
 	return nil
 }
 
-// pgColumns returns the column names and the positions of date/timestamp
-// columns (OIDs: timestamp 1114, timestamptz 1184, date 1082).
-func pgColumns(fields []pgconn.FieldDescription) ([]string, map[int]bool) {
+// pgColumns returns the column names and kinds from pgx field descriptions.
+func pgColumns(fields []pgconn.FieldDescription) ([]string, []colKind) {
 	columns := make([]string, len(fields))
-	timestampCols := map[int]bool{}
+	kinds := make([]colKind, len(fields))
 	for i, f := range fields {
 		columns[i] = f.Name
-		if f.DataTypeOID == 1114 || f.DataTypeOID == 1184 || f.DataTypeOID == 1082 {
-			timestampCols[i] = true
-		}
+		kinds[i] = pgColKind(f.DataTypeOID)
 	}
-	return columns, timestampCols
+	return columns, kinds
+}
+
+// pgColKind maps a PostgreSQL type OID to a colKind. numeric, bool, uuid,
+// json and the rest stay unknown and are inferred from their first value.
+func pgColKind(oid uint32) colKind {
+	switch oid {
+	case 20, 21, 23: // int8, int2, int4
+		return kindInt
+	case 700, 701: // float4, float8
+		return kindFloat
+	case 1082, 1114, 1184: // date, timestamp, timestamptz
+		return kindTime
+	case 25, 1043, 1042, 19: // text, varchar, bpchar, name
+		return kindText
+	}
+	return kindUnknown
 }
 
 // pgChunkColumn picks the chunking strategy: the first date/timestamp

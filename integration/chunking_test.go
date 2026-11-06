@@ -260,3 +260,64 @@ func TestLocalTimestampTyping(t *testing.T) {
 		})
 	}
 }
+
+// A NULL in the first row must not decide a column's Parquet type.
+func TestLocalNullFirstRowTyping(t *testing.T) {
+	skipUnlessLocalTest(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	seed := func(driver, dsn string) {
+		db, err := sql.Open(driver, dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		for _, q := range []string{
+			`DROP TABLE IF EXISTS inttest_nulls`,
+			`CREATE TABLE inttest_nulls (id INT PRIMARY KEY, n BIGINT NULL, f FLOAT NULL, s VARCHAR(10) NULL, ts TIMESTAMP NULL)`,
+			`INSERT INTO inttest_nulls VALUES (1, NULL, NULL, NULL, NULL)`,
+			`INSERT INTO inttest_nulls VALUES (2, 42, 1.5, 'x', '2024-01-01 00:00:00')`,
+		} {
+			if _, err := db.Exec(q); err != nil {
+				t.Fatalf("%s: %v", q, err)
+			}
+		}
+	}
+	check := func(t *testing.T, backupDir string) {
+		db, err := sql.Open("duckdb", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		glob := filepath.Join(backupDir, "inttest_nulls", "**", "*.parquet")
+		var tn, tf, ts, tts string
+		var n int64
+		q := fmt.Sprintf("SELECT typeof(max(n)), typeof(max(f)), typeof(max(s)), typeof(max(ts)), max(n) FROM read_parquet('%s')", glob)
+		if err := db.QueryRow(q).Scan(&tn, &tf, &ts, &tts, &n); err != nil {
+			t.Fatalf("probe: %v", err)
+		}
+		if tn != "BIGINT" || tf != "DOUBLE" || ts != "VARCHAR" || !strings.HasPrefix(tts, "TIMESTAMP") || n != 42 {
+			t.Errorf("types n=%s f=%s s=%s ts=%s max(n)=%d; want BIGINT DOUBLE VARCHAR TIMESTAMP* 42", tn, tf, ts, tts, n)
+		}
+	}
+
+	t.Run("postgres", func(t *testing.T) {
+		seed("postgres", pgDSN)
+		opts := archive.DefaultOptions()
+		opts.OutputDir = t.TempDir()
+		if err := archive.ArchivePostgres(ctx, pgDSN, []string{"inttest_nulls"}, "nulls", opts); err != nil {
+			t.Fatal(err)
+		}
+		check(t, filepath.Join(opts.OutputDir, "nulls"))
+	})
+	t.Run("mysql", func(t *testing.T) {
+		seed("mysql", mysqlGoDSN)
+		opts := archive.DefaultOptions()
+		opts.OutputDir = t.TempDir()
+		if err := archive.ArchiveMySQL(ctx, mysqlGoDSN, []string{"inttest_nulls"}, "nulls", opts); err != nil {
+			t.Fatal(err)
+		}
+		check(t, filepath.Join(opts.OutputDir, "nulls"))
+	})
+}

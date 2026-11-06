@@ -78,12 +78,19 @@ func TestInferParquetSchema(t *testing.T) {
 		}
 	})
 
-	t.Run("timestamp hint beats the sample value", func(t *testing.T) {
-		for _, sample := range []interface{}{[]byte("2025-01-01 00:00:00"), "2025-01-01", nil} {
-			schema := inferParquetSchema([]string{"ts"}, []interface{}{sample}, map[int]bool{0: true})
-			if !strings.Contains(schema, "TIMESTAMP_MILLIS") {
-				t.Errorf("sample %#v: expected TIMESTAMP_MILLIS, got %s", sample, schema)
+	t.Run("declared kinds beat the sample value", func(t *testing.T) {
+		cases := map[colKind]string{kindInt: "type=INT64", kindFloat: "type=DOUBLE", kindTime: "TIMESTAMP_MILLIS", kindText: "convertedtype=UTF8"}
+		for kind, want := range cases {
+			for _, sample := range []interface{}{nil, []byte("2025-01-01 00:00:00"), "x"} {
+				schema := inferParquetSchema([]string{"c"}, []interface{}{sample}, []colKind{kind})
+				if !strings.Contains(schema, want) {
+					t.Errorf("kind %d sample %#v: expected %s, got %s", kind, sample, want, schema)
+				}
 			}
+		}
+		// Unknown kind with a NULL sample is the one case that still defaults to bytes.
+		if schema := inferParquetSchema([]string{"c"}, []interface{}{nil}, []colKind{kindUnknown}); !strings.Contains(schema, "type=BYTE_ARRAY") {
+			t.Errorf("unknown+nil: %s", schema)
 		}
 	})
 

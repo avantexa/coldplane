@@ -11,15 +11,15 @@ import (
 // fakeRows is an in-memory rowSource.
 type fakeRows struct {
 	cols   []string
-	tsCols map[int]bool
+	kinds  []colKind
 	rows   [][]interface{}
 	i      int
 	failAt int   // 1-based row whose Values() fails; 0 = never
 	err    error // returned by Err() after iteration
 }
 
-func (f *fakeRows) Columns() ([]string, map[int]bool) { return f.cols, f.tsCols }
-func (f *fakeRows) Next() bool                        { f.i++; return f.i <= len(f.rows) }
+func (f *fakeRows) Columns() ([]string, []colKind) { return f.cols, f.kinds }
+func (f *fakeRows) Next() bool                     { f.i++; return f.i <= len(f.rows) }
 func (f *fakeRows) Values() ([]interface{}, error) {
 	if f.i == f.failAt {
 		return nil, errors.New("driver exploded")
@@ -29,7 +29,7 @@ func (f *fakeRows) Values() ([]interface{}, error) {
 func (f *fakeRows) Err() error { return f.err }
 
 func eventRows(n int) *fakeRows {
-	f := &fakeRows{cols: []string{"id", "ts"}}
+	f := &fakeRows{cols: []string{"id", "ts"}, kinds: []colKind{kindInt, kindTime}}
 	base := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 	for i := 0; i < n; i++ {
 		f.rows = append(f.rows, []interface{}{int64(i), base.AddDate(0, i, 0)})

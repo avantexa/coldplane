@@ -46,9 +46,9 @@ func TestRowToMap(t *testing.T) {
 	ts := time.Date(2025, 6, 15, 10, 30, 0, 0, time.UTC)
 	columns := []string{"id", "blob", "nothing", "created_at", "updated_at", "bad_ts", "weird_ts"}
 	values := []interface{}{int64(1), []byte("raw"), nil, ts, "2025-06-15 10:30:00", "not a date", 12345}
-	timestampCols := map[int]bool{3: true, 4: true, 5: true, 6: true}
+	kinds := []colKind{kindInt, kindUnknown, kindUnknown, kindTime, kindTime, kindTime, kindTime}
 
-	m := rowToMap(columns, values, timestampCols)
+	m := rowToMap(columns, values, kinds)
 
 	if m["id"] != int64(1) {
 		t.Errorf("id: %#v", m["id"])

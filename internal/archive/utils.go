@@ -89,18 +89,27 @@ func NormalizeMySQLDSN(input string) string {
 	return dsn
 }
 
-// inferParquetSchema builds the parquet-go JSON schema for a row shape. Columns
-// the driver reports as date/timestamp (timestampCols) are typed
-// TIMESTAMP_MILLIS whatever the sample holds, since rowToMap stores them as
-// epoch milliseconds; other columns are typed from the sample value.
-func inferParquetSchema(fieldNames []string, sampleRow []interface{}, timestampCols map[int]bool) string {
+// inferParquetSchema builds the parquet-go JSON schema for a row shape. A
+// column whose kind the driver declared is typed from that kind; the rest
+// are typed from the sample value, so only a NULL in a column of unknown
+// kind falls back to BYTE_ARRAY.
+func inferParquetSchema(fieldNames []string, sampleRow []interface{}, kinds []colKind) string {
 	tags := []string{}
 
 	for i, name := range fieldNames {
 		var tag string
 		val := sampleRow[i]
-		if timestampCols[i] {
-			val = time.Time{}
+		if i < len(kinds) {
+			switch kinds[i] {
+			case kindInt:
+				val = int64(0)
+			case kindFloat:
+				val = float64(0)
+			case kindTime:
+				val = time.Time{}
+			case kindText:
+				val = ""
+			}
 		}
 
 		// All columns use repetitiontype=OPTIONAL so parquet-go handles
