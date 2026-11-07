@@ -114,3 +114,23 @@ func TestVerifySQLBuilders(t *testing.T) {
 		t.Errorf("RemoteSQL: %s", got)
 	}
 }
+
+func TestRestoreSQLBuilders(t *testing.T) {
+	src := `read_parquet('/b/orders/**/*.parquet', hive_partitioning=false)`
+	got := CreateTableFromSQL("dst", "orders_restored", src)
+	if got != `CREATE TABLE dst."orders_restored" AS SELECT * FROM read_parquet('/b/orders/**/*.parquet', hive_partitioning=false) WHERE 1=0` {
+		t.Errorf("create: %s", got)
+	}
+	got = InsertFromSQL("dst", "orders_restored", []string{"id", "amount"}, src)
+	if got != `INSERT INTO dst."orders_restored" ("id", "amount") SELECT "id", "amount" FROM read_parquet('/b/orders/**/*.parquet', hive_partitioning=false)` {
+		t.Errorf("insert: %s", got)
+	}
+	got = InsertFromSQL("dst", "t", nil, src)
+	if got != `INSERT INTO dst."t" SELECT * FROM read_parquet('/b/orders/**/*.parquet', hive_partitioning=false)` {
+		t.Errorf("insert without columns: %s", got)
+	}
+	got = TableExistsSQL("dst", "orders_restored")
+	if got != `SELECT count(*) FROM information_schema.tables WHERE table_catalog = 'dst' AND table_name = 'orders_restored'` {
+		t.Errorf("exists: %s", got)
+	}
+}

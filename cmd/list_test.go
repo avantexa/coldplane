@@ -59,3 +59,15 @@ func TestRenderPurge(t *testing.T) {
 		t.Errorf("executed output:\n%s", out)
 	}
 }
+
+func TestRenderRestore(t *testing.T) {
+	var buf bytes.Buffer
+	renderRestore(&buf, nil)
+	if buf.Len() != 0 {
+		t.Error("nothing restored prints nothing")
+	}
+	renderRestore(&buf, []archive.RestoreResult{{Table: "orders", Target: "orders_2024", Rows: 12}, {Table: "events", Target: "events", Rows: 30}})
+	if out := buf.String(); !strings.Contains(out, "orders_2024") || !strings.Contains(out, "Restored 42 rows") {
+		t.Errorf("restore output:\n%s", out)
+	}
+}

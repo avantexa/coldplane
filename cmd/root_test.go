@@ -136,7 +136,7 @@ func TestDetectDBType(t *testing.T) {
 // --- command surface: local only ---
 
 func TestCloudCommandsAreGone(t *testing.T) {
-	for _, args := range [][]string{{"auth"}, {"convert"}, {"backup", "describe"}, {"backup", "restore"}} {
+	for _, args := range [][]string{{"auth"}, {"convert"}, {"backup", "describe"}} {
 		want := args[len(args)-1]
 		c, _, _ := rootCmd.Find(args)
 		if c != nil && c.Name() == want {

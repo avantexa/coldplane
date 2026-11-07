@@ -24,6 +24,7 @@ coldplane/
 │   │   ├── manifest.go        # Manifest/TableEntry/FileEntry, index.json read/write, backup dir rules, runBackup
 │   │   ├── verify.go          # Verify: source vs archive counts and row-hash sums through DuckDB
 │   │   ├── purge.go           # Purge: gated, batched DELETE of archived rows (pgx stdlib / mysql drivers)
+│   │   ├── restore.go         # Restore: attach target read-write, CREATE/INSERT from Parquet through DuckDB
 │   │   ├── local.go           # ListBackups, DeleteBackup, ResolveBackupDir
 │   │   ├── options.go         # ArchiveOptions (ChunkSize, Workers, OutputDir, Where)
 │   │   └── utils.go           # ProgressTracker, NormalizeMySQLDSN
@@ -60,6 +61,7 @@ go build -o coldplane      # cgo must be enabled (DuckDB); no extra libraries ne
 | `backup create` | Archive tables to Parquet under `~/.coldplane/backups/<name>/` |
 | `backup verify` | Compare a backup with its source (counts + row hash per table, with the backup's `--where`); records the result in index.json |
 | `backup purge-source` | Delete the archived rows from the source in batches; refuses unless verified, same database, counts unchanged; dry run without `--yes` |
+| `backup restore` | Load a backup into Postgres or MySQL (cross-engine) through DuckDB; `--table`, `--as`, `--create` |
 | `backup list` | List backups found on disk, with a Verified column |
 | `backup delete` | Remove a backup directory |
 | `query run` | Run SQL with DuckDB against a backup (view name: `restore_input`) |

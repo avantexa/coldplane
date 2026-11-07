@@ -311,6 +311,58 @@ func renderPurge(w io.Writer, results []archive.PurgeResult, executed bool) {
 	}
 }
 
+var (
+	restoreTo     string
+	restoreTables string
+	restoreAs     string
+	restoreCreate bool
+)
+
+var backupRestoreCmd = &cobra.Command{
+	Use:   "restore <name>",
+	Args:  cobra.ExactArgs(1),
+	Short: "Load a backup's tables into a database, PostgreSQL or MySQL",
+	Long: `Inserts the archived rows into the target database straight from the
+Parquet files. The target may be a different engine than the source; types
+are mapped by DuckDB. Existing target tables are appended to; missing ones
+are created with --create.`,
+	Example: `  coldplane backup restore events_20250101_120000 --to "postgres://user:pass@host:5432/staging" --create
+  coldplane backup restore events_20250101_120000 --to "mysql://user:pass@host:3306/analytics" --table events --as events_2024 --create`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if restoreTo == "" {
+			return fmt.Errorf("you must specify --to")
+		}
+		fmt.Println(term.Cyan("Restoring backup into the target database..."))
+		opts := archive.RestoreOptions{Tables: splitList(restoreTables), As: restoreAs, Create: restoreCreate}
+		results, err := archive.Restore(ctx, archive.ResolveBackupDir(args[0]), normalizeDSN(restoreTo), opts)
+		renderRestore(os.Stdout, results)
+		if err != nil {
+			return fmt.Errorf("%s: %w", term.ColorError("restore failed"), err)
+		}
+		return nil
+	},
+}
+
+// renderRestore prints the rows loaded per table.
+func renderRestore(w io.Writer, results []archive.RestoreResult) {
+	if len(results) == 0 {
+		return
+	}
+	t := prettytable.NewWriter()
+	t.SetOutputMirror(w)
+	t.SetStyle(prettytable.StyleRounded)
+	t.AppendHeader(prettytable.Row{"Table", "Restored As", "Rows"})
+	var total int64
+	for _, r := range results {
+		t.AppendRow(prettytable.Row{r.Table, r.Target, r.Rows})
+		total += r.Rows
+	}
+	t.Render()
+	fmt.Fprintf(w, "Restored %d rows.\n", total)
+}
+
 var backupDeleteCmd = &cobra.Command{
 	Use:     "delete <name>",
 	Aliases: []string{"rm"},
@@ -616,6 +668,12 @@ func init() {
 	backupPurgeCmd.Flags().IntVar(&purgeBatchSize, "batch-size", 5000, "Rows per DELETE statement")
 	backupPurgeCmd.Flags().BoolVar(&purgeYes, "yes", false, "Actually delete; without it the command only reports")
 
+	// backup restore flags
+	backupRestoreCmd.Flags().StringVar(&restoreTo, "to", "", "Target database connection string, postgres:// or mysql:// (required)")
+	backupRestoreCmd.Flags().StringVar(&restoreTables, "table", "", "Comma-separated tables to restore (default: all)")
+	backupRestoreCmd.Flags().StringVar(&restoreAs, "as", "", "Target table name, when restoring a single table")
+	backupRestoreCmd.Flags().BoolVar(&restoreCreate, "create", false, "Create missing target tables from the archive's schema")
+
 	// validation
 	backupCreateCmd.PreRunE = func(cmd *cobra.Command, args []string) error {
 		if dbURL == "" {
@@ -633,6 +691,7 @@ func init() {
 		backupListCmd,
 		backupVerifyCmd,
 		backupPurgeCmd,
+		backupRestoreCmd,
 		backupDeleteCmd,
 	)
 

@@ -160,3 +160,33 @@ func RowChecksumSQL(source string, columns []string) string {
 	}
 	return fmt.Sprintf("SELECT count(*), coalesce(sum(hash(ROW(%s))::HUGEINT), 0)::VARCHAR FROM %s", strings.Join(quoted, ", "), source)
 }
+
+// qualified names a table inside an attached catalog.
+func qualified(alias, table string) string {
+	return alias + "." + dbutil.QuotePG(table)
+}
+
+// CreateTableFromSQL creates an empty table in the attached catalog with the
+// columns and types of source.
+func CreateTableFromSQL(alias, table, source string) string {
+	return fmt.Sprintf("CREATE TABLE %s AS SELECT * FROM %s WHERE 1=0", qualified(alias, table), source)
+}
+
+// InsertFromSQL copies source into the attached table, by column name when
+// the column list is known so the target's column order does not matter.
+func InsertFromSQL(alias, table string, columns []string, source string) string {
+	if len(columns) == 0 {
+		return fmt.Sprintf("INSERT INTO %s SELECT * FROM %s", qualified(alias, table), source)
+	}
+	quoted := make([]string, len(columns))
+	for i, c := range columns {
+		quoted[i] = dbutil.QuotePG(c)
+	}
+	cols := strings.Join(quoted, ", ")
+	return fmt.Sprintf("INSERT INTO %s (%s) SELECT %s FROM %s", qualified(alias, table), cols, cols, source)
+}
+
+// TableExistsSQL counts the attached catalog's tables with that name.
+func TableExistsSQL(alias, table string) string {
+	return fmt.Sprintf("SELECT count(*) FROM information_schema.tables WHERE table_catalog = %s AND table_name = %s", literal(alias), literal(table))
+}

@@ -145,6 +145,28 @@ Without `--yes` it is always a dry run. The purge is recorded in the backup's `i
 | `--yes` | | Delete; without it the command only reports |
 | `--batch-size` | | Rows per `DELETE` statement (default: 5000) |
 
+### `backup restore` — Bring the data back
+
+Loads a backup's tables into a PostgreSQL or MySQL database, straight from the Parquet files. The target does not have to be the engine the data came from; DuckDB maps the types.
+
+```bash
+# Into a staging database, creating the tables from the archive's schema
+coldplane backup restore events_20250101_120000 --to "postgres://user:pass@host:5432/staging" --create
+
+# One table, under another name, into MySQL
+coldplane backup restore events_20250101_120000 --to "mysql://user:pass@host:3306/analytics" \
+  --table events --as events_2024 --create
+```
+
+Rows are appended to existing target tables. A missing table is an error that lists the columns unless `--create` is given.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--to` | | Target connection string, `postgres://` or `mysql://` (required) |
+| `--table` | | Comma-separated tables to restore (default: all) |
+| `--as` | | Target table name, when restoring a single table |
+| `--create` | | Create missing target tables from the archive's schema |
+
 ### `backup list` — List backups
 
 ```bash
