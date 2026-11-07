@@ -65,6 +65,10 @@ func seedChunkingTables(driver, dsn string) error {
 			return err
 		}
 	}
+	// A row with no timestamp must still be archived, outside every time window.
+	if _, err := db.Exec(`INSERT INTO inttest_events VALUES (NULL, 'undated')`); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -104,8 +108,8 @@ func testChunkingStrategies(t *testing.T, run func(ctx context.Context, name str
 	if got := parquetRowCount(t, filepath.Join(backupDir, "chunking"), "inttest_plain"); got != 7 {
 		t.Errorf("inttest_plain: %d rows archived, want 7", got)
 	}
-	if got := parquetRowCount(t, filepath.Join(backupDir, "chunking"), "inttest_events"); got != 12 {
-		t.Errorf("inttest_events: %d rows archived, want 12", got)
+	if got := parquetRowCount(t, filepath.Join(backupDir, "chunking"), "inttest_events"); got != 13 {
+		t.Errorf("inttest_events: %d rows archived, want 13 (12 dated + 1 NULL)", got)
 	}
 	// A non-numeric primary key must not be used for range chunking.
 	if got := parquetRowCount(t, filepath.Join(backupDir, "chunking"), "inttest_strkey"); got != 5 {

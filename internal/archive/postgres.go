@@ -29,16 +29,16 @@ func archivePostgresTable(ctx context.Context, pool *pgxpool.Pool, eng *duck.Eng
 	if err != nil {
 		return TableEntry{}, err
 	}
-	chunkKind, column, err := pgChunkColumn(ctx, conn.Conn(), table)
+	key, err := pgChunkColumn(ctx, conn.Conn(), table)
 	if err != nil {
 		return TableEntry{}, fmt.Errorf("failed to detect chunk column: %w", err)
 	}
 	// The time column we chunk on is also the natural partition column.
-	partitionColumn := column
-	if chunkKind != chunkByTime {
+	partitionColumn := key.column
+	if key.kind != chunkByTime {
 		partitionColumn = pgPartitionColumn(ctx, conn, table)
 	}
-	plan, err := pgChunkPlan(ctx, conn, table, opts.Where, chunkKind, column, opts.ChunkSize, progress)
+	plan, err := pgChunkPlan(ctx, conn, table, opts.Where, key, opts.ChunkSize, progress)
 	if err != nil {
 		return TableEntry{}, err
 	}
@@ -46,16 +46,16 @@ func archivePostgresTable(ctx context.Context, pool *pgxpool.Pool, eng *duck.Eng
 	if err != nil {
 		return TableEntry{}, err
 	}
-	return tableEntry(table, partitionColumn, files, columns, chunkKind, column, progress.DoneRows), nil
+	return tableEntry(table, partitionColumn, files, columns, key.kind, key.column, progress.DoneRows), nil
 }
 
 // pgChunkPlan plans the chunks for the detected strategy.
-func pgChunkPlan(ctx context.Context, conn *pgxpool.Conn, table, where string, kind chunkKind, column string, chunkSize int, progress *ProgressTracker) (chunkPlan, error) {
-	switch kind {
+func pgChunkPlan(ctx context.Context, conn *pgxpool.Conn, table, where string, key chunkKey, chunkSize int, progress *ProgressTracker) (chunkPlan, error) {
+	switch key.kind {
 	case chunkByTime:
-		return pgTimeChunks(ctx, conn, table, where, column, progress)
+		return pgTimeChunks(ctx, conn, table, where, key, progress)
 	case chunkByID:
-		return pgIDChunks(ctx, conn, table, where, column, chunkSize, progress)
+		return pgIDChunks(ctx, conn, table, where, key.column, chunkSize, progress)
 	default:
 		return pgOffsetChunks(ctx, conn, table, where, chunkSize, progress)
 	}
@@ -100,22 +100,28 @@ func pgReportNoRows(ctx context.Context, conn *pgxpool.Conn, table, kind string)
 
 // pgTimeChunks plans time-window chunks. Postgres TIMESTAMP has microsecond
 // precision, so the last window is nudged by one microsecond.
-func pgTimeChunks(ctx context.Context, conn *pgxpool.Conn, table, where, timeColumn string, progress *ProgressTracker) (chunkPlan, error) {
+func pgTimeChunks(ctx context.Context, conn *pgxpool.Conn, table, where string, key chunkKey, progress *ProgressTracker) (chunkPlan, error) {
+	timeColumn := key.column
 	var minT, maxT sql.NullTime
 	if err := conn.QueryRow(ctx, pgMinMaxQuery(table, where, timeColumn)).Scan(&minT, &maxT); err != nil {
 		return chunkPlan{}, fmt.Errorf("failed to get min/max timestamp: %w", err)
 	}
-	if !minT.Valid || !maxT.Valid || minT.Time.After(maxT.Time) {
+	var ranges []timeRange
+	if minT.Valid && maxT.Valid {
+		window := timeWindow(maxT.Time.Sub(minT.Time), defaultTimeWindow, maxTimeChunks)
+		ranges = planTimeChunks(minT.Time, maxT.Time, window, time.Microsecond)
+		fmt.Printf("[archive-postgres] Using %q for time chunking: min=%s max=%s window=%s (%d chunks)\n",
+			timeColumn, minT.Time.Format(time.RFC3339), maxT.Time.Format(time.RFC3339), window, len(ranges))
+	} else {
 		pgReportNoRows(ctx, conn, table, "time range")
-		return chunkPlan{}, nil
 	}
-	window := timeWindow(maxT.Time.Sub(minT.Time), defaultTimeWindow, maxTimeChunks)
-	ranges := planTimeChunks(minT.Time, maxT.Time, window, time.Microsecond)
-	progress.TotalChunks = len(ranges)
-	fmt.Printf("[archive-postgres] Using %q for time chunking: min=%s max=%s window=%s (%d chunks)\n",
-		timeColumn, minT.Time.Format(time.RFC3339), maxT.Time.Format(time.RFC3339), window, len(ranges))
-	return chunkPlan{n: len(ranges), query: func(i int) string {
-		return pgRangeQuery(table, where, timeColumn, sqlString(ranges[i].Start.Format(pgTimeLayout)), sqlString(ranges[i].End.Format(pgTimeLayout)))
+	// Rows with a NULL timestamp fall outside every window: one more chunk collects them.
+	progress.TotalChunks = len(ranges) + 1
+	return chunkPlan{n: len(ranges) + 1, query: func(i int) string {
+		if i == len(ranges) {
+			return pgNullQuery(table, where, timeColumn)
+		}
+		return pgRangeQuery(table, where, timeColumn, pgTimeLiteral(ranges[i].Start, key.withZone), pgTimeLiteral(ranges[i].End, key.withZone))
 	}}, nil
 }
 
@@ -168,28 +174,29 @@ func ArchivePostgres(ctx context.Context, dbURL string, tables []string, name st
 
 // pgChunkColumn picks the chunking strategy: the first date/timestamp
 // column first, then an integer primary key, else OFFSET/LIMIT.
-func pgChunkColumn(ctx context.Context, conn *pgx.Conn, table string) (chunkKind, string, error) {
-	col, err := pgFirstTimestampColumn(ctx, conn, table)
+func pgChunkColumn(ctx context.Context, conn *pgx.Conn, table string) (chunkKey, error) {
+	col, dataType, err := pgFirstTimestampColumn(ctx, conn, table)
 	if err != nil {
-		return chunkByOffset, "", err
+		return chunkKey{}, err
 	}
 	if col != "" {
-		return chunkByTime, col, nil
+		return chunkKey{kind: chunkByTime, column: col, withZone: strings.Contains(dataType, "with time zone")}, nil
 	}
 	if col := pgNumericPrimaryKey(ctx, conn, table); col != "" {
-		return chunkByID, col, nil
+		return chunkKey{kind: chunkByID, column: col}, nil
 	}
-	return chunkByOffset, "", nil
+	return chunkKey{kind: chunkByOffset}, nil
 }
 
-// pgFirstTimestampColumn returns the table's first date or timestamp column, or "".
-func pgFirstTimestampColumn(ctx context.Context, conn *pgx.Conn, table string) (string, error) {
+// pgFirstTimestampColumn returns the table's first date or timestamp column
+// and its data type, or "" when there is none.
+func pgFirstTimestampColumn(ctx context.Context, conn *pgx.Conn, table string) (string, string, error) {
 	rows, err := conn.Query(ctx,
 		`SELECT column_name, data_type FROM information_schema.columns
 		 WHERE table_schema = current_schema() AND table_name = $1
 		 ORDER BY ordinal_position`, table)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -198,10 +205,10 @@ func pgFirstTimestampColumn(ctx context.Context, conn *pgx.Conn, table string) (
 			continue
 		}
 		if lt := strings.ToLower(typ); strings.Contains(lt, "timestamp") || strings.Contains(lt, "date") {
-			return name, nil
+			return name, lt, nil
 		}
 	}
-	return "", nil
+	return "", "", nil
 }
 
 // pgNumericPrimaryKey returns the table's first integer primary-key column, or "".

@@ -2,6 +2,7 @@ package archive
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/avantexa/coldplane/internal/dbutil"
 )
@@ -13,8 +14,22 @@ import (
 // offset, MySQL literals cannot.
 const (
 	mysqlTimeLayout = "2006-01-02 15:04:05.000000"
-	pgTimeLayout    = "2006-01-02 15:04:05.000000-07:00"
+	pgNaiveLayout   = "2006-01-02 15:04:05.000000"
+	pgZoneLayout    = "2006-01-02 15:04:05.000000-07:00"
 )
+
+// pgTimeLiteral renders a chunk bound for Postgres as a typed literal. A
+// timestamptz column compares instants, so the literal carries its offset and
+// type; date and timestamp columns compare wall-clock values, so the literal
+// is the UTC wall clock typed as timestamp. The explicit type matters: an
+// untyped literal next to a date column would be cast to date, dropping the
+// one-microsecond nudge that keeps the last row inside the final window.
+func pgTimeLiteral(t time.Time, withZone bool) string {
+	if withZone {
+		return sqlString(t.Format(pgZoneLayout)) + "::timestamptz"
+	}
+	return sqlString(t.UTC().Format(pgNaiveLayout)) + "::timestamp"
+}
 
 // mysqlRangeQuery selects the rows of table where lo <= col < hi (lo and hi
 // already rendered as SQL literals), optionally narrowed by a WHERE clause.
@@ -24,6 +39,15 @@ func mysqlRangeQuery(table, where, col, lo, hi string) string {
 		return fmt.Sprintf("SELECT * FROM %s WHERE (%s) AND (%s >= %s AND %s < %s)", qt, where, qc, lo, qc, hi)
 	}
 	return fmt.Sprintf("SELECT * FROM %s WHERE %s >= %s AND %s < %s", qt, qc, lo, qc, hi)
+}
+
+// mysqlNullQuery selects the rows whose chunk column is NULL, which no range covers.
+func mysqlNullQuery(table, where, col string) string {
+	qt, qc := dbutil.QuoteMySQL(table), dbutil.QuoteMySQL(col)
+	if where != "" {
+		return fmt.Sprintf("SELECT * FROM %s WHERE (%s) AND %s IS NULL", qt, where, qc)
+	}
+	return fmt.Sprintf("SELECT * FROM %s WHERE %s IS NULL", qt, qc)
 }
 
 // mysqlOffsetQuery selects one LIMIT/OFFSET page of table.
@@ -61,6 +85,15 @@ func pgRangeQuery(table, where, col, lo, hi string) string {
 		return fmt.Sprintf("SELECT * FROM %s WHERE (%s) AND (%s >= %s AND %s < %s)", qt, where, qc, lo, qc, hi)
 	}
 	return fmt.Sprintf("SELECT * FROM %s WHERE %s >= %s AND %s < %s", qt, qc, lo, qc, hi)
+}
+
+// pgNullQuery selects the rows whose chunk column is NULL, which no range covers.
+func pgNullQuery(table, where, col string) string {
+	qt, qc := dbutil.QuotePG(table), dbutil.QuotePG(col)
+	if where != "" {
+		return fmt.Sprintf("SELECT * FROM %s WHERE (%s) AND %s IS NULL", qt, where, qc)
+	}
+	return fmt.Sprintf("SELECT * FROM %s WHERE %s IS NULL", qt, qc)
 }
 
 // pgOffsetQuery selects one LIMIT/OFFSET page of table.

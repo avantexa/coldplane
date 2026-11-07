@@ -34,20 +34,20 @@ func archiveMySQLTable(ctx context.Context, db *sql.DB, eng *duck.Engine, kind d
 	if err != nil {
 		return TableEntry{}, err
 	}
-	chunkKind, column, err := mysqlChunkColumn(db, table)
+	key, err := mysqlChunkColumn(db, table)
 	if err != nil {
 		return TableEntry{}, fmt.Errorf("failed to detect chunk column: %w", err)
 	}
 	// The time column we chunk on is also the natural partition column.
-	partitionColumn := column
-	if chunkKind != chunkByTime {
+	partitionColumn := key.column
+	if key.kind != chunkByTime {
 		partitionColumn = mysqlPartitionColumn(db, table)
 	}
-	if partitionColumn == "" && chunkKind == chunkByOffset {
+	if partitionColumn == "" && key.kind == chunkByOffset {
 		partitionColumn = detectMySQLDatetimeColumn(db, table)
 	}
 
-	plan, err := mysqlChunkPlan(db, table, opts.Where, chunkKind, column, opts.ChunkSize, progress)
+	plan, err := mysqlChunkPlan(db, table, opts.Where, key, opts.ChunkSize, progress)
 	if err != nil {
 		return TableEntry{}, err
 	}
@@ -55,16 +55,16 @@ func archiveMySQLTable(ctx context.Context, db *sql.DB, eng *duck.Engine, kind d
 	if err != nil {
 		return TableEntry{}, err
 	}
-	return tableEntry(table, partitionColumn, files, columns, chunkKind, column, progress.DoneRows), nil
+	return tableEntry(table, partitionColumn, files, columns, key.kind, key.column, progress.DoneRows), nil
 }
 
 // mysqlChunkPlan plans the chunks for the detected strategy.
-func mysqlChunkPlan(db *sql.DB, table, where string, kind chunkKind, column string, chunkSize int, progress *ProgressTracker) (chunkPlan, error) {
-	switch kind {
+func mysqlChunkPlan(db *sql.DB, table, where string, key chunkKey, chunkSize int, progress *ProgressTracker) (chunkPlan, error) {
+	switch key.kind {
 	case chunkByID:
-		return mysqlIDChunks(db, table, where, column, chunkSize, progress)
+		return mysqlIDChunks(db, table, where, key.column, chunkSize, progress)
 	case chunkByTime:
-		return mysqlTimeChunks(db, table, where, column, progress)
+		return mysqlTimeChunks(db, table, where, key.column, progress)
 	default:
 		return mysqlOffsetChunks(db, table, where, chunkSize, progress)
 	}
@@ -154,25 +154,26 @@ func mysqlTimeChunks(db *sql.DB, table, where, timeColumn string, progress *Prog
 	if err := db.QueryRow(mysqlMinMaxQuery(table, where, timeColumn)).Scan(&minStr, &maxStr); err != nil {
 		return chunkPlan{}, fmt.Errorf("[archive-mysql] failed to get min/max timestamp: %w", err)
 	}
-	if !minStr.Valid || !maxStr.Valid {
+	var ranges []timeRange
+	if minStr.Valid && maxStr.Valid {
+		minTime, errMin := dbutil.ParseTime(minStr.String)
+		maxTime, errMax := dbutil.ParseTime(maxStr.String)
+		if errMin != nil || errMax != nil {
+			return chunkPlan{}, fmt.Errorf("[archive-mysql] failed to parse min/max timestamp: min: %v max: %v", errMin, errMax)
+		}
+		window := timeWindow(maxTime.Sub(minTime), defaultTimeWindow, maxTimeChunks)
+		ranges = planTimeChunks(minTime, maxTime, window, time.Second)
+		fmt.Printf("[archive-mysql] Using %q for time chunking (min: %s, max: %s) with window %s (%d chunks expected)\n",
+			timeColumn, minTime.Format(time.RFC3339), maxTime.Format(time.RFC3339), window, len(ranges))
+	} else {
 		mysqlReportNoRows(db, table, "time range")
-		return chunkPlan{}, nil
 	}
-	minTime, errMin := dbutil.ParseTime(minStr.String)
-	maxTime, errMax := dbutil.ParseTime(maxStr.String)
-	if errMin != nil || errMax != nil {
-		return chunkPlan{}, fmt.Errorf("[archive-mysql] failed to parse min/max timestamp: min: %v max: %v", errMin, errMax)
-	}
-	if minTime.After(maxTime) {
-		mysqlReportNoRows(db, table, "time range")
-		return chunkPlan{}, nil
-	}
-	window := timeWindow(maxTime.Sub(minTime), defaultTimeWindow, maxTimeChunks)
-	ranges := planTimeChunks(minTime, maxTime, window, time.Second)
-	progress.TotalChunks = len(ranges)
-	fmt.Printf("[archive-mysql] Using %q for time chunking (min: %s, max: %s) with window %s (%d chunks expected)\n",
-		timeColumn, minTime.Format(time.RFC3339), maxTime.Format(time.RFC3339), window, len(ranges))
-	return chunkPlan{n: len(ranges), query: func(i int) string {
+	// Rows with a NULL timestamp fall outside every window: one more chunk collects them.
+	progress.TotalChunks = len(ranges) + 1
+	return chunkPlan{n: len(ranges) + 1, query: func(i int) string {
+		if i == len(ranges) {
+			return mysqlNullQuery(table, where, timeColumn)
+		}
 		return mysqlRangeQuery(table, where, timeColumn, sqlString(ranges[i].Start.Format(mysqlTimeLayout)), sqlString(ranges[i].End.Format(mysqlTimeLayout)))
 	}}, nil
 }
@@ -195,18 +196,18 @@ func mysqlOffsetChunks(db *sql.DB, table, where string, chunkSize int, progress 
 
 // mysqlChunkColumn picks the chunking strategy: an integer primary key
 // first, then the first DATETIME/TIMESTAMP column, else OFFSET/LIMIT.
-func mysqlChunkColumn(db *sql.DB, table string) (chunkKind, string, error) {
+func mysqlChunkColumn(db *sql.DB, table string) (chunkKey, error) {
 	if col := mysqlNumericPrimaryKey(db, table); col != "" {
-		return chunkByID, col, nil
+		return chunkKey{kind: chunkByID, column: col}, nil
 	}
 	col, err := mysqlFirstDatetimeColumn(db, table)
 	if err != nil {
-		return chunkByOffset, "", err
+		return chunkKey{}, err
 	}
 	if col != "" {
-		return chunkByTime, col, nil
+		return chunkKey{kind: chunkByTime, column: col}, nil
 	}
-	return chunkByOffset, "", nil
+	return chunkKey{kind: chunkByOffset}, nil
 }
 
 // mysqlNumericPrimaryKey returns the first primary-key column of the table in

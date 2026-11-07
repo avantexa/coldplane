@@ -116,6 +116,14 @@ const (
 
 var chunkKindNames = map[chunkKind]string{chunkByOffset: "offset", chunkByID: "id", chunkByTime: "time"}
 
+// chunkKey is the column a table is chunked on and how. withZone marks a
+// Postgres timestamptz column, whose range bounds must carry an offset.
+type chunkKey struct {
+	kind     chunkKind
+	column   string
+	withZone bool
+}
+
 func (k chunkKind) String() string { return chunkKindNames[k] }
 
 // chunkPlan is a table's planned chunk queries: n chunks, each a native SQL
