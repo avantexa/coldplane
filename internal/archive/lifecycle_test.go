@@ -123,3 +123,21 @@ func TestCommonSince(t *testing.T) {
 		t.Errorf("no tables: %q", got)
 	}
 }
+
+func TestVerifiedCutoff(t *testing.T) {
+	m := Manifest{DBName: "shop", VerifiedAt: "x", Cutoff: "2024-02-01T00:00:00Z", Tables: []TableEntry{{Name: "orders"}}}
+	if c, ok := verifiedCutoff(m, "shop", "orders"); !ok || c.Year() != 2024 {
+		t.Errorf("matching: %v %v", c, ok)
+	}
+	for name, bad := range map[string]Manifest{
+		"other db":    {DBName: "crm", VerifiedAt: "x", Cutoff: "2024-02-01T00:00:00Z", Tables: []TableEntry{{Name: "orders"}}},
+		"unverified":  {DBName: "shop", Cutoff: "2024-02-01T00:00:00Z", Tables: []TableEntry{{Name: "orders"}}},
+		"no cutoff":   {DBName: "shop", VerifiedAt: "x", Tables: []TableEntry{{Name: "orders"}}},
+		"bad cutoff":  {DBName: "shop", VerifiedAt: "x", Cutoff: "yesterday", Tables: []TableEntry{{Name: "orders"}}},
+		"other table": {DBName: "shop", VerifiedAt: "x", Cutoff: "2024-02-01T00:00:00Z", Tables: []TableEntry{{Name: "events"}}},
+	} {
+		if _, ok := verifiedCutoff(bad, "shop", "orders"); ok {
+			t.Errorf("%s should not yield a cutoff", name)
+		}
+	}
+}

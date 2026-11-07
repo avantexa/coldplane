@@ -49,24 +49,11 @@ func Purge(ctx context.Context, backupDir, dsn string, opts PurgeOptions) ([]Pur
 
 	var results []PurgeResult
 	for i := range m.Tables {
-		t := &m.Tables[i]
-		current, err := countRows(ctx, db, m.DBType, t.Name, m.whereFor(*t))
+		r, err := purgeTable(ctx, db, m, &m.Tables[i], opts)
 		if err != nil {
-			return nil, fmt.Errorf("count %s: %w", t.Name, err)
+			return results, err
 		}
-		if current != t.Verified.SourceRows {
-			return nil, fmt.Errorf("table %s has %d matching rows but %d were verified; the source changed, run 'backup verify' again before purging", t.Name, current, t.Verified.SourceRows)
-		}
-		if !opts.Execute {
-			results = append(results, PurgeResult{Table: t.Name, Rows: current})
-			continue
-		}
-		deleted, err := deleteInBatches(ctx, db, m.DBType, t.Name, m.whereFor(*t), opts.BatchSize)
-		if err != nil {
-			return results, fmt.Errorf("purge %s: %w", t.Name, err)
-		}
-		t.Purged = &TablePurge{At: time.Now().UTC().Format(time.RFC3339), Rows: deleted}
-		results = append(results, PurgeResult{Table: t.Name, Rows: deleted})
+		results = append(results, r)
 	}
 	if opts.Execute {
 		m.PurgedAt = time.Now().UTC().Format(time.RFC3339)
@@ -75,6 +62,28 @@ func Purge(ctx context.Context, backupDir, dsn string, opts PurgeOptions) ([]Pur
 		}
 	}
 	return results, nil
+}
+
+// purgeTable checks one table's count against its verification, then counts
+// (dry run) or deletes its archived rows and records the purge on the entry.
+func purgeTable(ctx context.Context, db *sql.DB, m Manifest, t *TableEntry, opts PurgeOptions) (PurgeResult, error) {
+	where := m.whereFor(*t)
+	current, err := countRows(ctx, db, m.DBType, t.Name, where)
+	if err != nil {
+		return PurgeResult{}, fmt.Errorf("count %s: %w", t.Name, err)
+	}
+	if current != t.Verified.SourceRows {
+		return PurgeResult{}, fmt.Errorf("table %s has %d matching rows but %d were verified; the source changed, run 'backup verify' again before purging", t.Name, current, t.Verified.SourceRows)
+	}
+	if !opts.Execute {
+		return PurgeResult{Table: t.Name, Rows: current}, nil
+	}
+	deleted, err := deleteInBatches(ctx, db, m.DBType, t.Name, where, opts.BatchSize)
+	if err != nil {
+		return PurgeResult{}, fmt.Errorf("purge %s: %w", t.Name, err)
+	}
+	t.Purged = &TablePurge{At: time.Now().UTC().Format(time.RFC3339), Rows: deleted}
+	return PurgeResult{Table: t.Name, Rows: deleted}, nil
 }
 
 // purgeRefusal is the gate: a verified backup, every table passing, same database.

@@ -47,20 +47,32 @@ func lastCutoff(baseDir, dbName, table string) (time.Time, bool) {
 			continue
 		}
 		m, err := ReadManifest(filepath.Join(baseDir, e.Name()))
-		if err != nil || m.DBName != dbName || m.VerifiedAt == "" || m.Cutoff == "" {
-			continue
-		}
-		cutoff, err := time.Parse(time.RFC3339, m.Cutoff)
 		if err != nil {
 			continue
 		}
-		for _, t := range m.Tables {
-			if t.Name == table && cutoff.After(best) {
-				best, found = cutoff, true
-			}
+		if cutoff, ok := verifiedCutoff(m, dbName, table); ok && cutoff.After(best) {
+			best, found = cutoff, true
 		}
 	}
 	return best, found
+}
+
+// verifiedCutoff is a backup's --older-than cutoff when it is verified, from
+// the given database, archived the table and has a parsable cutoff.
+func verifiedCutoff(m Manifest, dbName, table string) (time.Time, bool) {
+	if m.DBName != dbName || m.VerifiedAt == "" || m.Cutoff == "" {
+		return time.Time{}, false
+	}
+	cutoff, err := time.Parse(time.RFC3339, m.Cutoff)
+	if err != nil {
+		return time.Time{}, false
+	}
+	for _, t := range m.Tables {
+		if t.Name == table {
+			return cutoff, true
+		}
+	}
+	return time.Time{}, false
 }
 
 // PruneOptions tunes a prune run.

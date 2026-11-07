@@ -45,43 +45,48 @@ var goMySQLDSN = regexp.MustCompile(`^(?:([^:@/]+)(?::([^@/]*))?@)?(?:(\w+)(?:\(
 // mysqlAttachString converts a MySQL connection string, URL or Go DSN, into
 // the key=value form the DuckDB mysql extension attaches.
 func mysqlAttachString(dsn string) (string, error) {
-	var user, pass, host, port, db string
+	c, err := parseMySQLDSN(dsn)
+	if err != nil {
+		return "", err
+	}
+	if c.host == "" {
+		c.host = "localhost"
+	}
+	if c.port == "" {
+		c.port = "3306"
+	}
+	parts := []string{"host=" + c.host, "port=" + c.port}
+	for _, kv := range []struct{ k, v string }{{"user", c.user}, {"password", c.pass}, {"database", c.db}} {
+		if kv.v != "" {
+			parts = append(parts, kv.k+"="+kv.v)
+		}
+	}
+	return strings.Join(parts, " "), nil
+}
+
+// mysqlConn is a MySQL connection string taken apart.
+type mysqlConn struct{ user, pass, host, port, db string }
+
+// parseMySQLDSN accepts mysql://user:pass@host:port/db?params and the Go
+// driver form user:pass@tcp(host:port)/db?params.
+func parseMySQLDSN(dsn string) (mysqlConn, error) {
 	if strings.HasPrefix(dsn, "mysql://") {
 		u, err := url.Parse(dsn)
 		if err != nil {
-			return "", fmt.Errorf("parse mysql url: %w", err)
+			return mysqlConn{}, fmt.Errorf("parse mysql url: %w", err)
 		}
-		user = u.User.Username()
-		pass, _ = u.User.Password()
-		host, port = u.Hostname(), u.Port()
-		db = strings.TrimPrefix(u.Path, "/")
-	} else {
-		m := goMySQLDSN.FindStringSubmatch(dsn)
-		if m == nil {
-			return "", fmt.Errorf("unrecognized MySQL DSN %q", dsn)
-		}
-		user, pass, db = m[1], m[2], m[5]
-		if addr := m[4]; addr != "" {
-			host, port, _ = strings.Cut(addr, ":")
-		}
+		pass, _ := u.User.Password()
+		return mysqlConn{user: u.User.Username(), pass: pass, host: u.Hostname(), port: u.Port(), db: strings.TrimPrefix(u.Path, "/")}, nil
 	}
-	if host == "" {
-		host = "localhost"
+	m := goMySQLDSN.FindStringSubmatch(dsn)
+	if m == nil {
+		return mysqlConn{}, fmt.Errorf("unrecognized MySQL DSN %q", dsn)
 	}
-	if port == "" {
-		port = "3306"
+	c := mysqlConn{user: m[1], pass: m[2], db: m[5]}
+	if addr := m[4]; addr != "" {
+		c.host, c.port, _ = strings.Cut(addr, ":")
 	}
-	parts := []string{"host=" + host, "port=" + port}
-	if user != "" {
-		parts = append(parts, "user="+user)
-	}
-	if pass != "" {
-		parts = append(parts, "password="+pass)
-	}
-	if db != "" {
-		parts = append(parts, "database="+db)
-	}
-	return strings.Join(parts, " "), nil
+	return c, nil
 }
 
 // literal renders s as a DuckDB single-quoted string literal.
