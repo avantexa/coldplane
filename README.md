@@ -112,6 +112,39 @@ For each table it counts the rows in the source, using the backup's own `--where
 | `--db-url` | `-d` | Connection string of the source database (required) |
 | `--no-checksum` | | Compare row counts only |
 
+### `backup purge-source` — Remove the archived rows from the database
+
+The step the rest exists for. It deletes from the source exactly the rows a verified backup archived, using the backup's own `--where`, in batches that each commit on their own.
+
+```bash
+coldplane backup purge-source events_20250101_120000 --db-url "postgres://..."         # dry run
+coldplane backup purge-source events_20250101_120000 --db-url "postgres://..." --yes   # delete
+```
+
+```
+╭────────┬────────────────╮
+│ TABLE  │ ROWS TO DELETE │
+├────────┼────────────────┤
+│ events │        1842210 │
+│ logs   │         903311 │
+╰────────┴────────────────╯
+2745521 rows would be deleted. Re-run with --yes to delete them.
+```
+
+Guards, all of which stop the command before any `DELETE`:
+
+- the backup must be verified (`backup verify`) with every table passing;
+- `--db-url` must point at the database the backup came from;
+- each table must still hold exactly the row count that was verified. If anything changed since, verify again first.
+
+Without `--yes` it is always a dry run. The purge is recorded in the backup's `index.json`.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--db-url` | `-d` | Connection string of the source database (required) |
+| `--yes` | | Delete; without it the command only reports |
+| `--batch-size` | | Rows per `DELETE` statement (default: 5000) |
+
 ### `backup list` — List backups
 
 ```bash

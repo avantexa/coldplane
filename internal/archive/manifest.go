@@ -31,6 +31,7 @@ type TableEntry struct {
 	ChunkKind       string             `json:"chunk_kind,omitempty"`   // id, time or offset
 	ChunkColumn     string             `json:"chunk_column,omitempty"` // key or timestamp the chunks ranged over
 	Verified        *TableVerification `json:"verified,omitempty"`
+	Purged          *TablePurge        `json:"purged,omitempty"`
 }
 
 // Manifest is the content of a backup's index.json.
@@ -45,6 +46,7 @@ type Manifest struct {
 	Where      string       `json:"where,omitempty"`       // row filter the backup was taken with
 	Engine     string       `json:"engine,omitempty"`      // extraction engine, "duckdb"
 	VerifiedAt string       `json:"verified_at,omitempty"` // set when every table passed verification
+	PurgedAt   string       `json:"purged_at,omitempty"`   // set when the archived rows were removed from the source
 }
 
 // TableNames lists the archived tables in manifest order.

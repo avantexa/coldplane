@@ -45,3 +45,17 @@ func TestRenderVerification(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderPurge(t *testing.T) {
+	var buf bytes.Buffer
+	results := []archive.PurgeResult{{Table: "orders", Rows: 1200}, {Table: "events", Rows: 34}}
+	renderPurge(&buf, results, false)
+	if out := buf.String(); !strings.Contains(out, "ROWS TO DELETE") || !strings.Contains(out, "1234 rows would be deleted") || !strings.Contains(out, "--yes") {
+		t.Errorf("dry run output:\n%s", out)
+	}
+	buf.Reset()
+	renderPurge(&buf, results, true)
+	if out := buf.String(); !strings.Contains(out, "ROWS DELETED") || !strings.Contains(out, "Deleted 1234 rows") {
+		t.Errorf("executed output:\n%s", out)
+	}
+}

@@ -249,6 +249,68 @@ func renderVerification(w io.Writer, m archive.Manifest) {
 	t.Render()
 }
 
+var (
+	purgeDBURL     string
+	purgeBatchSize int
+	purgeYes       bool
+)
+
+var backupPurgeCmd = &cobra.Command{
+	Use:   "purge-source <name>",
+	Args:  cobra.ExactArgs(1),
+	Short: "Delete the archived rows of a verified backup from the source database",
+	Long: `Removes from the source database the rows a backup archived, using the
+backup's own --where filter, in batches that each commit on their own.
+
+It refuses unless the backup is verified against this database and every
+table still has exactly the row count that was verified. Without --yes it
+is a dry run that only reports what would be deleted.`,
+	Example: `  coldplane backup purge-source events_20250101_120000 --db-url "postgres://..."         # dry run
+  coldplane backup purge-source events_20250101_120000 --db-url "postgres://..." --yes   # delete`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if purgeDBURL == "" {
+			return fmt.Errorf("you must specify --db-url")
+		}
+		opts := archive.PurgeOptions{BatchSize: purgeBatchSize, Execute: purgeYes}
+		if purgeYes {
+			fmt.Println(term.Cyan("Deleting archived rows from the source database..."))
+		} else {
+			fmt.Println(term.Cyan("Dry run: counting the rows a purge would delete..."))
+		}
+		results, err := archive.Purge(ctx, archive.ResolveBackupDir(args[0]), normalizeDSN(purgeDBURL), opts)
+		if err != nil {
+			return fmt.Errorf("%s: %w", term.ColorError("purge refused"), err)
+		}
+		renderPurge(os.Stdout, results, purgeYes)
+		return nil
+	},
+}
+
+// renderPurge prints the per-table rows deleted (or to be deleted).
+func renderPurge(w io.Writer, results []archive.PurgeResult, executed bool) {
+	header := "Rows To Delete"
+	if executed {
+		header = "Rows Deleted"
+	}
+	t := prettytable.NewWriter()
+	t.SetOutputMirror(w)
+	t.SetStyle(prettytable.StyleRounded)
+	t.AppendHeader(prettytable.Row{"Table", header})
+	var total int64
+	for _, r := range results {
+		t.AppendRow(prettytable.Row{r.Table, r.Rows})
+		total += r.Rows
+	}
+	t.Render()
+	if executed {
+		fmt.Fprintf(w, "Deleted %d rows from the source.\n", total)
+	} else {
+		fmt.Fprintf(w, "%d rows would be deleted. Re-run with --yes to delete them.\n", total)
+	}
+}
+
 var backupDeleteCmd = &cobra.Command{
 	Use:     "delete <name>",
 	Aliases: []string{"rm"},
@@ -549,6 +611,11 @@ func init() {
 	backupVerifyCmd.Flags().StringVarP(&verifyDBURL, "db-url", "d", "", "Database connection string of the source (required)")
 	backupVerifyCmd.Flags().BoolVar(&verifyNoChecksum, "no-checksum", false, "Compare row counts only")
 
+	// backup purge-source flags
+	backupPurgeCmd.Flags().StringVarP(&purgeDBURL, "db-url", "d", "", "Database connection string of the source (required)")
+	backupPurgeCmd.Flags().IntVar(&purgeBatchSize, "batch-size", 5000, "Rows per DELETE statement")
+	backupPurgeCmd.Flags().BoolVar(&purgeYes, "yes", false, "Actually delete; without it the command only reports")
+
 	// validation
 	backupCreateCmd.PreRunE = func(cmd *cobra.Command, args []string) error {
 		if dbURL == "" {
@@ -565,6 +632,7 @@ func init() {
 		backupCreateCmd,
 		backupListCmd,
 		backupVerifyCmd,
+		backupPurgeCmd,
 		backupDeleteCmd,
 	)
 
