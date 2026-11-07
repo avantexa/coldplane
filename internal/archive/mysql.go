@@ -15,49 +15,15 @@ import (
 )
 
 // ArchiveMySQL archives one or more tables into local Parquet files under a single backup name.
-func ArchiveMySQL(ctx context.Context, dsn string, tables []string, name string, opts ArchiveOptions) (err error) {
-	fmt.Println("[archive-mysql] Starting archive process")
-	backupDir, err := prepareBackupDir(opts, name)
-	if err != nil {
-		return fmt.Errorf("[archive-mysql] %w", err)
-	}
-	defer func() {
-		if err != nil {
-			discardBackupDir(backupDir)
-		}
-	}()
-
+func ArchiveMySQL(ctx context.Context, dsn string, tables []string, name string, opts ArchiveOptions) error {
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return fmt.Errorf("[archive-mysql] failed to connect to MySQL: %w", err)
 	}
 	defer db.Close()
-
-	eng, err := duck.Open(ctx)
-	if err != nil {
-		return fmt.Errorf("[archive-mysql] %w", err)
-	}
-	defer eng.Close()
-	kind, err := eng.Attach(ctx, dsn, srcAlias, true)
-	if err != nil {
-		return fmt.Errorf("[archive-mysql] %w", err)
-	}
-
-	var manifestTables []TableEntry
-	for _, table := range tables {
-		entry, err := archiveMySQLTable(ctx, db, eng, kind, table, backupDir, opts)
-		if err != nil {
-			return fmt.Errorf("[archive-mysql] failed to archive table %s: %w", table, err)
-		}
-		manifestTables = append(manifestTables, entry)
-	}
-
-	total, err := writeBackupManifest(backupDir, name, "mysql", dbutil.DBNameFromDSN(dsn), opts.Where, manifestTables)
-	if err != nil {
-		return fmt.Errorf("[archive-mysql] failed to write local manifest: %w", err)
-	}
-	fmt.Printf("[archive-mysql] Backup complete: %s (%d bytes)\n", backupDir, total)
-	return nil
+	return runBackup(ctx, "mysql", dsn, tables, name, opts, func(ctx context.Context, eng *duck.Engine, kind duck.Kind, table, backupDir string) (TableEntry, error) {
+		return archiveMySQLTable(ctx, db, eng, kind, table, backupDir, opts)
+	})
 }
 
 // archiveMySQLTable archives one table and returns its manifest entry.

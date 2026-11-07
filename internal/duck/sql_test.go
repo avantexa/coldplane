@@ -86,3 +86,15 @@ func TestDescribeSQL(t *testing.T) {
 		t.Errorf("%s", got)
 	}
 }
+
+func TestConnectionString(t *testing.T) {
+	if got, _ := connectionString(Postgres, "pg://u@h/db"); got != "postgres://u@h/db" {
+		t.Errorf("pg:// should become postgres://, got %s", got)
+	}
+	if got, _ := connectionString(Postgres, "postgres://u@h/db"); got != "postgres://u@h/db" {
+		t.Errorf("postgres:// passthrough, got %s", got)
+	}
+	if got, _ := connectionString(MySQL, "mysql://u@h/db"); got != "host=h port=3306 user=u database=db" {
+		t.Errorf("mysql: %s", got)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/avantexa/coldplane/internal/dbutil"
 	"github.com/avantexa/coldplane/internal/duck"
 )
 
@@ -183,4 +184,50 @@ func tableEntry(table, partitionColumn string, files []FileEntry, columns []stri
 	e.ChunkColumn = chunkColumn
 	e.RowCount = rows
 	return e
+}
+
+// tableArchiver archives one table of the attached source into backupDir.
+type tableArchiver func(ctx context.Context, eng *duck.Engine, kind duck.Kind, table, backupDir string) (TableEntry, error)
+
+// runBackup is the engine-independent backup: prepare the directory, attach
+// the source to DuckDB read-only, archive each table, write index.json. A
+// failure removes the directory so no half-written backup lingers.
+func runBackup(ctx context.Context, dbType, dsn string, tables []string, name string, opts ArchiveOptions, archiveOne tableArchiver) (err error) {
+	tag := "[archive-" + dbType + "]"
+	fmt.Printf("%s Starting archive process\n", tag)
+	backupDir, err := prepareBackupDir(opts, name)
+	if err != nil {
+		return fmt.Errorf("%s %w", tag, err)
+	}
+	defer func() {
+		if err != nil {
+			discardBackupDir(backupDir)
+		}
+	}()
+
+	eng, err := duck.Open(ctx)
+	if err != nil {
+		return fmt.Errorf("%s %w", tag, err)
+	}
+	defer eng.Close()
+	kind, err := eng.Attach(ctx, dsn, srcAlias, true)
+	if err != nil {
+		return fmt.Errorf("%s %w", tag, err)
+	}
+
+	var entries []TableEntry
+	for _, table := range tables {
+		entry, err := archiveOne(ctx, eng, kind, table, backupDir)
+		if err != nil {
+			return fmt.Errorf("%s failed to archive table %s: %w", tag, table, err)
+		}
+		entries = append(entries, entry)
+	}
+
+	total, err := writeBackupManifest(backupDir, name, dbType, dbutil.DBNameFromDSN(dsn), opts.Where, entries)
+	if err != nil {
+		return fmt.Errorf("%s failed to write local manifest: %w", tag, err)
+	}
+	fmt.Printf("%s Backup complete: %s (%d bytes)\n", tag, backupDir, total)
+	return nil
 }

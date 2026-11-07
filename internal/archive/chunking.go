@@ -114,15 +114,9 @@ const (
 	chunkByTime                    // windows of a timestamp column
 )
 
-func (k chunkKind) String() string {
-	switch k {
-	case chunkByID:
-		return "id"
-	case chunkByTime:
-		return "time"
-	}
-	return "offset"
-}
+var chunkKindNames = map[chunkKind]string{chunkByOffset: "offset", chunkByID: "id", chunkByTime: "time"}
+
+func (k chunkKind) String() string { return chunkKindNames[k] }
 
 // chunkPlan is a table's planned chunk queries: n chunks, each a native SQL
 // SELECT for the source engine that DuckDB passes through unchanged.

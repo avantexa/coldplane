@@ -155,49 +155,15 @@ func pgOffsetChunks(ctx context.Context, conn *pgxpool.Conn, table, where string
 }
 
 // ArchivePostgres archives one or more tables into local Parquet files under a single backup name.
-func ArchivePostgres(ctx context.Context, dbURL string, tables []string, name string, opts ArchiveOptions) (err error) {
-	fmt.Println("[archive-postgres] Starting archive process")
-	backupDir, err := prepareBackupDir(opts, name)
-	if err != nil {
-		return fmt.Errorf("[archive-postgres] %w", err)
-	}
-	defer func() {
-		if err != nil {
-			discardBackupDir(backupDir)
-		}
-	}()
-
+func ArchivePostgres(ctx context.Context, dbURL string, tables []string, name string, opts ArchiveOptions) error {
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
 		return fmt.Errorf("[archive-postgres] failed to connect to DB pool: %w", err)
 	}
 	defer pool.Close()
-
-	eng, err := duck.Open(ctx)
-	if err != nil {
-		return fmt.Errorf("[archive-postgres] %w", err)
-	}
-	defer eng.Close()
-	kind, err := eng.Attach(ctx, dbURL, srcAlias, true)
-	if err != nil {
-		return fmt.Errorf("[archive-postgres] %w", err)
-	}
-
-	var manifestTables []TableEntry
-	for _, table := range tables {
-		entry, err := archivePostgresTable(ctx, pool, eng, kind, table, backupDir, opts)
-		if err != nil {
-			return fmt.Errorf("[archive-postgres] failed to archive table %s: %w", table, err)
-		}
-		manifestTables = append(manifestTables, entry)
-	}
-
-	total, err := writeBackupManifest(backupDir, name, "postgres", dbutil.DBNameFromDSN(dbURL), opts.Where, manifestTables)
-	if err != nil {
-		return fmt.Errorf("[archive-postgres] failed to write local manifest: %w", err)
-	}
-	fmt.Printf("[archive-postgres] Backup complete: %s (%d bytes)\n", backupDir, total)
-	return nil
+	return runBackup(ctx, "postgres", dbURL, tables, name, opts, func(ctx context.Context, eng *duck.Engine, kind duck.Kind, table, backupDir string) (TableEntry, error) {
+		return archivePostgresTable(ctx, pool, eng, kind, table, backupDir, opts)
+	})
 }
 
 // pgChunkColumn picks the chunking strategy: the first date/timestamp

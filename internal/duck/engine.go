@@ -57,14 +57,9 @@ func (e *Engine) Attach(ctx context.Context, dsn, alias string, readOnly bool) (
 	if err := e.ensureExtension(ctx, kind); err != nil {
 		return 0, err
 	}
-	connStr := dsn
-	switch kind {
-	case Postgres:
-		connStr = "postgres://" + strings.TrimPrefix(strings.TrimPrefix(dsn, "pg://"), "postgres://")
-	case MySQL:
-		if connStr, err = mysqlAttachString(dsn); err != nil {
-			return 0, err
-		}
+	connStr, err := connectionString(kind, dsn)
+	if err != nil {
+		return 0, err
 	}
 	if _, err := e.db.ExecContext(ctx, attachSQL(kind, connStr, alias, readOnly)); err != nil {
 		return 0, fmt.Errorf("attach %s database: %w", kind, err)
@@ -93,6 +88,14 @@ func (e *Engine) ensureExtension(ctx context.Context, kind Kind) error {
 		return fmt.Errorf("load duckdb %s extension: %w", name, err)
 	}
 	return nil
+}
+
+// connectionString renders dsn the way the engine's DuckDB extension expects it.
+func connectionString(kind Kind, dsn string) (string, error) {
+	if kind == MySQL {
+		return mysqlAttachString(dsn)
+	}
+	return "postgres://" + strings.TrimPrefix(strings.TrimPrefix(dsn, "pg://"), "postgres://"), nil
 }
 
 func (e *Engine) extensionDir(ctx context.Context) string {
