@@ -134,3 +134,29 @@ func DescribeSQL(kind Kind, alias, table string) string {
 	}
 	return "DESCRIBE SELECT * FROM " + remoteQuerySQL(kind, alias, "SELECT * FROM "+quoted+" WHERE 1=0")
 }
+
+// RemoteSQL is the table function that runs native SQL on the attached
+// database: use it as a FROM source.
+func RemoteSQL(kind Kind, alias, nativeSQL string) string {
+	return remoteQuerySQL(kind, alias, nativeSQL)
+}
+
+// ParquetSQL reads every Parquet file under a table's directory as a FROM
+// source, ignoring the year=/month= directory names.
+func ParquetSQL(tableDir string) string {
+	return fmt.Sprintf("read_parquet(%s, hive_partitioning=false)", literal(tableDir+"/**/*.parquet"))
+}
+
+// RowChecksumSQL counts the rows of source and sums a hash of the listed
+// columns per row, which is order independent and counts duplicates. With no
+// column list the whole row is hashed.
+func RowChecksumSQL(source string, columns []string) string {
+	if len(columns) == 0 {
+		return fmt.Sprintf("SELECT count(*), coalesce(sum(hash(t)::HUGEINT), 0)::VARCHAR FROM %s t", source)
+	}
+	quoted := make([]string, len(columns))
+	for i, c := range columns {
+		quoted[i] = dbutil.QuotePG(c)
+	}
+	return fmt.Sprintf("SELECT count(*), coalesce(sum(hash(ROW(%s))::HUGEINT), 0)::VARCHAR FROM %s", strings.Join(quoted, ", "), source)
+}

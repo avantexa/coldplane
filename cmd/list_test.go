@@ -27,3 +27,21 @@ func TestRenderLocalBackups(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderVerification(t *testing.T) {
+	var buf bytes.Buffer
+	m := archive.Manifest{Tables: []archive.TableEntry{
+		{Name: "orders", Verified: &archive.TableVerification{SourceRows: 8, ArchiveRows: 8, SourceChecksum: "x", ArchiveChecksum: "x", Status: "pass"}},
+		{Name: "events", Verified: &archive.TableVerification{SourceRows: 9, ArchiveRows: 8, SourceChecksum: "x", ArchiveChecksum: "y", Status: "count_mismatch"}},
+		{Name: "counts", Verified: &archive.TableVerification{SourceRows: 3, ArchiveRows: 3, Status: "pass"}},
+		{Name: "broken", Verified: &archive.TableVerification{Status: "error", Error: "source: boom"}},
+		{Name: "untouched"},
+	}}
+	renderVerification(&buf, m)
+	out := buf.String()
+	for _, want := range []string{"orders", "match", "events", "differs", "count_mismatch", "counts", "skipped", "error: source: boom", "untouched", "not verified"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("verification table missing %q:\n%s", want, out)
+		}
+	}
+}

@@ -21,7 +21,8 @@ coldplane/
 │   │   ├── chunking.go        # chunkKind/chunkPlan, planners, runChunks, shared archiveTable (DuckDB COPY per chunk)
 │   │   ├── queries.go         # Native SQL text for both engines (literal bounds; DuckDB passes it through)
 │   │   ├── partition.go       # timeValue, firstTimeColumn
-│   │   ├── manifest.go        # Manifest/TableEntry/FileEntry, index.json read/write, backup dir rules
+│   │   ├── manifest.go        # Manifest/TableEntry/FileEntry, index.json read/write, backup dir rules, runBackup
+│   │   ├── verify.go          # Verify: source vs archive counts and row-hash sums through DuckDB
 │   │   ├── local.go           # ListBackups, DeleteBackup, ResolveBackupDir
 │   │   ├── options.go         # ArchiveOptions (ChunkSize, Workers, OutputDir, Where)
 │   │   └── utils.go           # ProgressTracker, NormalizeMySQLDSN
@@ -56,7 +57,8 @@ go build -o coldplane      # cgo must be enabled (DuckDB); no extra libraries ne
 |---|---|
 | `analyze` | Report how much data per table is older than a threshold; suggests `backup create` commands |
 | `backup create` | Archive tables to Parquet under `~/.coldplane/backups/<name>/` |
-| `backup list` | List backups found on disk |
+| `backup verify` | Compare a backup with its source (counts + row hash per table, with the backup's `--where`); records the result in index.json |
+| `backup list` | List backups found on disk, with a Verified column |
 | `backup delete` | Remove a backup directory |
 | `query run` | Run SQL with DuckDB against a backup (view name: `restore_input`) |
 | `version`, `completion` | Build info, shell completions |

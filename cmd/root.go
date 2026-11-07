@@ -119,16 +119,21 @@ var backupCreateCmd = &cobra.Command{
 		}
 		opts.Where = whereFlag
 
+		var err error
 		switch dbType {
 		case "mysql":
 			fmt.Printf("[mysql] Archiving tables: %s\n", strings.Join(tbls, ", "))
-			return archive.ArchiveMySQL(ctx, dbURL, tbls, backupName, opts)
+			err = archive.ArchiveMySQL(ctx, dbURL, tbls, backupName, opts)
 		case "postgres":
 			fmt.Printf("[postgres] Archiving tables: %s\n", strings.Join(tbls, ", "))
-			return archive.ArchivePostgres(ctx, dbURL, tbls, backupName, opts)
+			err = archive.ArchivePostgres(ctx, dbURL, tbls, backupName, opts)
 		default:
 			return fmt.Errorf("%s: expected postgres://, pg://, or mysql:// prefix", term.ColorError("unsupported database URL format"))
 		}
+		if err != nil || !createVerify {
+			return err
+		}
+		return verifyBackup(ctx, archive.ResolveBackupDir(backupName), dbURL, true)
 	},
 }
 
@@ -159,7 +164,7 @@ func renderBackups(w io.Writer, backups []archive.BackupInfo) {
 	t := prettytable.NewWriter()
 	t.SetOutputMirror(w)
 	t.SetStyle(prettytable.StyleRounded)
-	t.AppendHeader(prettytable.Row{"Name", "Database", "DB Type", "Tables", "Created At", "Size", "Path"})
+	t.AppendHeader(prettytable.Row{"Name", "Database", "DB Type", "Tables", "Created At", "Size", "Verified", "Path"})
 	for _, b := range backups {
 		t.AppendRow(prettytable.Row{
 			b.Name,
@@ -168,8 +173,78 @@ func renderBackups(w io.Writer, backups []archive.BackupInfo) {
 			strings.Join(b.Tables, ", "),
 			b.CreatedAt,
 			humanSizeInt64(b.SizeBytes),
+			b.Verified,
 			b.Path,
 		})
+	}
+	t.Render()
+}
+
+var (
+	verifyDBURL      string
+	verifyNoChecksum bool
+	createVerify     bool
+)
+
+var backupVerifyCmd = &cobra.Command{
+	Use:   "verify <name>",
+	Args:  cobra.ExactArgs(1),
+	Short: "Compare a backup with its source database and record the result",
+	Long: `Counts the rows of every archived table in the source (with the backup's
+--where filter) and in the Parquet files, and compares an order-independent
+hash of the rows. The outcome is written into the backup's index.json; a
+backup is marked verified only when every table passes.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if verifyDBURL == "" {
+			return fmt.Errorf("you must specify --db-url")
+		}
+		return verifyBackup(ctx, archive.ResolveBackupDir(args[0]), normalizeDSN(verifyDBURL), !verifyNoChecksum)
+	},
+}
+
+// verifyBackup runs the verification, prints the per-table result and fails
+// the command unless every table passed.
+func verifyBackup(ctx context.Context, backupDir, dsn string, checksum bool) error {
+	fmt.Println(term.Cyan("Verifying backup against the source database..."))
+	m, err := archive.Verify(ctx, backupDir, dsn, archive.VerifyOptions{Checksum: checksum})
+	if err != nil {
+		return fmt.Errorf("%s: %w", term.ColorError("verification failed"), err)
+	}
+	renderVerification(os.Stdout, m)
+	if m.VerifiedAt == "" {
+		return fmt.Errorf("%s", term.ColorError("verification failed: the archive does not match the source"))
+	}
+	fmt.Printf("Backup %s verified.\n", m.Name)
+	return nil
+}
+
+// renderVerification prints one row per table with counts, checksum outcome and status.
+func renderVerification(w io.Writer, m archive.Manifest) {
+	t := prettytable.NewWriter()
+	t.SetOutputMirror(w)
+	t.SetStyle(prettytable.StyleRounded)
+	t.AppendHeader(prettytable.Row{"Table", "Source Rows", "Archive Rows", "Checksum", "Status"})
+	for _, tb := range m.Tables {
+		v := tb.Verified
+		if v == nil {
+			t.AppendRow(prettytable.Row{tb.Name, "-", "-", "-", "not verified"})
+			continue
+		}
+		checksum := "skipped"
+		switch {
+		case v.SourceChecksum == "" && v.ArchiveChecksum == "":
+		case v.SourceChecksum == v.ArchiveChecksum:
+			checksum = "match"
+		default:
+			checksum = "differs"
+		}
+		status := v.Status
+		if v.Error != "" {
+			status += ": " + v.Error
+		}
+		t.AppendRow(prettytable.Row{tb.Name, v.SourceRows, v.ArchiveRows, checksum, status})
 	}
 	t.Render()
 }
@@ -468,6 +543,11 @@ func init() {
 	backupCreateCmd.Flags().IntVar(&chunkSize, "chunk-size", 0, "Rows per chunk (default: 2500000)")
 	backupCreateCmd.Flags().IntVar(&workers, "workers", 0, "Parallel archive workers (default: 4)")
 	backupCreateCmd.Flags().StringVar(&whereFlag, "where", "", "SQL WHERE clause to filter rows (e.g. \"created_at < '2025-01-01'\")")
+	backupCreateCmd.Flags().BoolVar(&createVerify, "verify", false, "Verify the backup against the source right after archiving")
+
+	// backup verify flags
+	backupVerifyCmd.Flags().StringVarP(&verifyDBURL, "db-url", "d", "", "Database connection string of the source (required)")
+	backupVerifyCmd.Flags().BoolVar(&verifyNoChecksum, "no-checksum", false, "Compare row counts only")
 
 	// validation
 	backupCreateCmd.PreRunE = func(cmd *cobra.Command, args []string) error {
@@ -484,6 +564,7 @@ func init() {
 	backupCmd.AddCommand(
 		backupCreateCmd,
 		backupListCmd,
+		backupVerifyCmd,
 		backupDeleteCmd,
 	)
 

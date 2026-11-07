@@ -22,27 +22,29 @@ type FileEntry struct {
 
 // TableEntry describes one archived table.
 type TableEntry struct {
-	Name            string      `json:"name"`
-	PartitionColumn *string     `json:"partition_column"`
-	Files           []FileEntry `json:"files"`
-	SizeBytes       int64       `json:"size_bytes"`
-	RowCount        int64       `json:"row_count"`
-	Columns         []string    `json:"columns,omitempty"`      // source column order
-	ChunkKind       string      `json:"chunk_kind,omitempty"`   // id, time or offset
-	ChunkColumn     string      `json:"chunk_column,omitempty"` // key or timestamp the chunks ranged over
+	Name            string             `json:"name"`
+	PartitionColumn *string            `json:"partition_column"`
+	Files           []FileEntry        `json:"files"`
+	SizeBytes       int64              `json:"size_bytes"`
+	RowCount        int64              `json:"row_count"`
+	Columns         []string           `json:"columns,omitempty"`      // source column order
+	ChunkKind       string             `json:"chunk_kind,omitempty"`   // id, time or offset
+	ChunkColumn     string             `json:"chunk_column,omitempty"` // key or timestamp the chunks ranged over
+	Verified        *TableVerification `json:"verified,omitempty"`
 }
 
 // Manifest is the content of a backup's index.json.
 type Manifest struct {
-	Name      string       `json:"name"`
-	DBType    string       `json:"db_type"`
-	DBName    string       `json:"db_name"`
-	CreatedAt string       `json:"created_at"`
-	Tables    []TableEntry `json:"tables"`
-	SizeBytes int64        `json:"size_bytes"`
-	Local     bool         `json:"local"`
-	Where     string       `json:"where,omitempty"`  // row filter the backup was taken with
-	Engine    string       `json:"engine,omitempty"` // extraction engine, "duckdb"
+	Name       string       `json:"name"`
+	DBType     string       `json:"db_type"`
+	DBName     string       `json:"db_name"`
+	CreatedAt  string       `json:"created_at"`
+	Tables     []TableEntry `json:"tables"`
+	SizeBytes  int64        `json:"size_bytes"`
+	Local      bool         `json:"local"`
+	Where      string       `json:"where,omitempty"`       // row filter the backup was taken with
+	Engine     string       `json:"engine,omitempty"`      // extraction engine, "duckdb"
+	VerifiedAt string       `json:"verified_at,omitempty"` // set when every table passed verification
 }
 
 // TableNames lists the archived tables in manifest order.

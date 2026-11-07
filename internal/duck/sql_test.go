@@ -98,3 +98,19 @@ func TestConnectionString(t *testing.T) {
 		t.Errorf("mysql: %s", got)
 	}
 }
+
+func TestVerifySQLBuilders(t *testing.T) {
+	got := ParquetSQL("/b/orders")
+	if got != `read_parquet('/b/orders/**/*.parquet', hive_partitioning=false)` {
+		t.Errorf("ParquetSQL: %s", got)
+	}
+	got = RowChecksumSQL(`read_parquet('/b/t/**/*.parquet', hive_partitioning=false)`, []string{"id", "name"})
+	want := `SELECT count(*), coalesce(sum(hash(ROW("id", "name"))::HUGEINT), 0)::VARCHAR FROM read_parquet('/b/t/**/*.parquet', hive_partitioning=false)`
+	if got != want {
+		t.Errorf("RowChecksumSQL:\n got  %s\n want %s", got, want)
+	}
+	got = RemoteSQL(MySQL, "src", "SELECT * FROM `t`")
+	if got != "mysql_query('src', 'SELECT * FROM `t`')" {
+		t.Errorf("RemoteSQL: %s", got)
+	}
+}

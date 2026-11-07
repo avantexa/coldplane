@@ -25,6 +25,7 @@ type BackupInfo struct {
 	CreatedAt string
 	SizeBytes int64
 	Path      string
+	Verified  string // yes, partial or no
 }
 
 // ListBackups scans the local backup directory and returns info for each backup.
@@ -71,6 +72,7 @@ func backupInfoFromManifest(m Manifest, dir string) BackupInfo {
 		CreatedAt: m.CreatedAt,
 		SizeBytes: m.SizeBytes,
 		Tables:    m.TableNames(),
+		Verified:  verificationState(m),
 	}
 	if info.Name == "" {
 		info.Name = filepath.Base(dir)

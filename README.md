@@ -2,7 +2,7 @@
 
 `coldplane` archives cold data from PostgreSQL and MySQL tables into Parquet files on local disk, and lets you query those archives with DuckDB without restoring them.
 
-Typical use: find the tables holding years of old rows, archive the old rows to Parquet, verify the archive with a query, then delete the rows from production.
+Typical use: find the tables holding years of old rows, archive the old rows to Parquet, verify that the archive matches the database, then delete the rows from production.
 
 - **Nothing leaves your machine.** Backups live under `~/.coldplane/backups/<name>/`.
 - **No account, no server.** The binary talks only to your database and your disk.
@@ -85,6 +85,32 @@ coldplane backup create \
 | `--name` | | Backup name (auto-generated from table and timestamp if omitted) |
 | `--chunk-size` | | Rows per chunk (default: 2,500,000) |
 | `--workers` | | Parallel archive workers (default: 4) |
+| `--verify` | | Run `backup verify` right after archiving |
+
+### `backup verify` — Prove the archive matches the source
+
+Before deleting anything from production, check that the archive holds exactly the rows the database holds for the same filter.
+
+```bash
+coldplane backup verify events_20250101_120000 --db-url "postgres://user:pass@host:5432/mydb"
+```
+
+```
+╭────────┬─────────────┬──────────────┬──────────┬────────╮
+│ TABLE  │ SOURCE ROWS │ ARCHIVE ROWS │ CHECKSUM │ STATUS │
+├────────┼─────────────┼──────────────┼──────────┼────────┤
+│ events │     1842210 │      1842210 │ match    │ pass   │
+│ logs   │      903311 │       903311 │ match    │ pass   │
+╰────────┴─────────────┴──────────────┴──────────┴────────╯
+Backup events_20250101_120000 verified.
+```
+
+For each table it counts the rows in the source, using the backup's own `--where`, and in the Parquet files, and compares an order-independent hash of every row. The result is written into the backup's `index.json`, `backup list` shows it in the Verified column, and the command exits non-zero unless every table passes. `--no-checksum` compares counts only.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--db-url` | `-d` | Connection string of the source database (required) |
+| `--no-checksum` | | Compare row counts only |
 
 ### `backup list` — List backups
 
@@ -93,11 +119,11 @@ coldplane backup list
 ```
 
 ```
-╭────────────────────────┬──────────┬──────────┬──────────────┬──────────────────────┬─────────┬──────────────────────────────────────────╮
-│ Name                   │ Database │ DB Type  │ Tables       │ Created At           │ Size    │ Path                                     │
-├────────────────────────┼──────────┼──────────┼──────────────┼──────────────────────┼─────────┼──────────────────────────────────────────┤
-│ events_20250101_120000 │ mydb     │ postgres │ events, logs │ 2025-01-01T12:00:00Z │ 8.40 GB │ ~/.coldplane/backups/events_20250101_... │
-╰────────────────────────┴──────────┴──────────┴──────────────┴──────────────────────┴─────────┴──────────────────────────────────────────╯
+╭────────────────────────┬──────────┬──────────┬──────────────┬──────────────────────┬─────────┬──────────┬──────────────────────────────────────────╮
+│ Name                   │ Database │ DB Type  │ Tables       │ Created At           │ Size    │ Verified │ Path                                     │
+├────────────────────────┼──────────┼──────────┼──────────────┼──────────────────────┼─────────┼──────────┼──────────────────────────────────────────┤
+│ events_20250101_120000 │ mydb     │ postgres │ events, logs │ 2025-01-01T12:00:00Z │ 8.40 GB │ yes      │ ~/.coldplane/backups/events_20250101_... │
+╰────────────────────────┴──────────┴──────────┴──────────────┴──────────────────────┴─────────┴──────────┴──────────────────────────────────────────╯
 ```
 
 ### `query run` — Query archived data without restoring
