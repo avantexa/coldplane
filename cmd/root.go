@@ -73,12 +73,14 @@ var backupCmd = &cobra.Command{
 }
 
 var (
-	dbURL      string
-	tables     string
-	backupName string
-	chunkSize  int
-	workers    int
-	whereFlag  string
+	dbURL         string
+	tables        string
+	backupName    string
+	chunkSize     int
+	workers       int
+	whereFlag     string
+	olderThanFlag string
+	sinceLast     bool
 )
 
 var backupCreateCmd = &cobra.Command{
@@ -118,6 +120,16 @@ var backupCreateCmd = &cobra.Command{
 			opts.Workers = workers
 		}
 		opts.Where = whereFlag
+		if olderThanFlag != "" {
+			d, err := analyze.ParseDuration(olderThanFlag)
+			if err != nil {
+				return fmt.Errorf("invalid --older-than value: %w", err)
+			}
+			opts.OlderThan = olderThanFlag
+			opts.Cutoff = time.Now().UTC().Add(-d)
+			opts.SinceLast = sinceLast
+			fmt.Printf("Archiving rows older than %s (before %s)\n", olderThanFlag, opts.Cutoff.Format(time.RFC3339))
+		}
 
 		var err error
 		switch dbType {
@@ -361,6 +373,53 @@ func renderRestore(w io.Writer, results []archive.RestoreResult) {
 	}
 	t.Render()
 	fmt.Fprintf(w, "Restored %d rows.\n", total)
+}
+
+var (
+	pruneOlderThan  string
+	pruneUnverified bool
+	pruneYes        bool
+)
+
+var backupPruneCmd = &cobra.Command{
+	Use:   "prune",
+	Short: "Remove old backups from disk",
+	Long: `Deletes backups created longer ago than --older-than. Backups that were never
+verified are kept unless --include-unverified is given. Without --yes it only
+reports what would be removed.`,
+	Example: `  coldplane backup prune --older-than 2y
+  coldplane backup prune --older-than 2y --yes`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if pruneOlderThan == "" {
+			return fmt.Errorf("you must specify --older-than")
+		}
+		d, err := analyze.ParseDuration(pruneOlderThan)
+		if err != nil {
+			return fmt.Errorf("invalid --older-than value: %w", err)
+		}
+		removed, err := archive.Prune("", time.Now().UTC().Add(-d), archive.PruneOptions{IncludeUnverified: pruneUnverified, Execute: pruneYes})
+		if err != nil {
+			return err
+		}
+		renderPrune(os.Stdout, removed, pruneYes)
+		return nil
+	},
+}
+
+// renderPrune lists the backups removed, or to be removed.
+func renderPrune(w io.Writer, removed []archive.BackupInfo, executed bool) {
+	if len(removed) == 0 {
+		fmt.Fprintln(w, "No backups to prune.")
+		return
+	}
+	for _, b := range removed {
+		fmt.Fprintf(w, "  %s  (created %s, verified: %s)\n", b.Name, b.CreatedAt, b.Verified)
+	}
+	if executed {
+		fmt.Fprintf(w, "Removed %d backups.\n", len(removed))
+	} else {
+		fmt.Fprintf(w, "%d backups would be removed. Re-run with --yes to remove them.\n", len(removed))
+	}
 }
 
 var backupDeleteCmd = &cobra.Command{
@@ -658,6 +717,13 @@ func init() {
 	backupCreateCmd.Flags().IntVar(&workers, "workers", 0, "Parallel archive workers (default: 4)")
 	backupCreateCmd.Flags().StringVar(&whereFlag, "where", "", "SQL WHERE clause to filter rows (e.g. \"created_at < '2025-01-01'\")")
 	backupCreateCmd.Flags().BoolVar(&createVerify, "verify", false, "Verify the backup against the source right after archiving")
+	backupCreateCmd.Flags().StringVar(&olderThanFlag, "older-than", "", "Archive rows whose date column is older than this (e.g. 18m, 2y, 90d); each table's first date/timestamp column is used")
+	backupCreateCmd.Flags().BoolVar(&sinceLast, "since-last", false, "With --older-than: skip rows already archived by the newest verified backup of the same table")
+
+	// backup prune flags
+	backupPruneCmd.Flags().StringVar(&pruneOlderThan, "older-than", "", "Remove backups created longer ago than this (e.g. 2y, 180d) (required)")
+	backupPruneCmd.Flags().BoolVar(&pruneUnverified, "include-unverified", false, "Also remove backups that were never verified")
+	backupPruneCmd.Flags().BoolVar(&pruneYes, "yes", false, "Actually delete; without it the command only reports")
 
 	// backup verify flags
 	backupVerifyCmd.Flags().StringVarP(&verifyDBURL, "db-url", "d", "", "Database connection string of the source (required)")
@@ -682,6 +748,12 @@ func init() {
 		if tables == "" {
 			return fmt.Errorf("you must specify --tables")
 		}
+		if whereFlag != "" && olderThanFlag != "" {
+			return fmt.Errorf("use either --where or --older-than, not both")
+		}
+		if sinceLast && olderThanFlag == "" {
+			return fmt.Errorf("--since-last needs --older-than")
+		}
 		return nil
 	}
 
@@ -692,6 +764,7 @@ func init() {
 		backupVerifyCmd,
 		backupPurgeCmd,
 		backupRestoreCmd,
+		backupPruneCmd,
 		backupDeleteCmd,
 	)
 

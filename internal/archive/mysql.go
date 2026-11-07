@@ -21,6 +21,7 @@ func ArchiveMySQL(ctx context.Context, dsn string, tables []string, name string,
 		return fmt.Errorf("[archive-mysql] failed to connect to MySQL: %w", err)
 	}
 	defer db.Close()
+	opts.sourceDSN = dsn
 	return runBackup(ctx, "mysql", dsn, tables, name, opts, func(ctx context.Context, eng *duck.Engine, kind duck.Kind, table, backupDir string) (TableEntry, error) {
 		return archiveMySQLTable(ctx, db, eng, kind, table, backupDir, opts)
 	})
@@ -47,7 +48,12 @@ func archiveMySQLTable(ctx context.Context, db *sql.DB, eng *duck.Engine, kind d
 		partitionColumn = detectMySQLDatetimeColumn(db, table)
 	}
 
-	plan, err := mysqlChunkPlan(db, table, opts.Where, key, opts.ChunkSize, progress)
+	timeCol, _ := mysqlFirstDatetimeColumn(db, table)
+	filter, err := tableWhere("mysql", opts, table, chunkKey{column: timeCol})
+	if err != nil {
+		return TableEntry{}, err
+	}
+	plan, err := mysqlChunkPlan(db, table, filter.where, key, opts.ChunkSize, progress)
 	if err != nil {
 		return TableEntry{}, err
 	}
@@ -55,7 +61,7 @@ func archiveMySQLTable(ctx context.Context, db *sql.DB, eng *duck.Engine, kind d
 	if err != nil {
 		return TableEntry{}, err
 	}
-	return tableEntry(table, partitionColumn, files, columns, key.kind, key.column, progress.DoneRows), nil
+	return tableEntry(table, partitionColumn, files, columns, key, filter, progress.DoneRows), nil
 }
 
 // mysqlChunkPlan plans the chunks for the detected strategy.

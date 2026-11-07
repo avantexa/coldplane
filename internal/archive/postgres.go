@@ -38,7 +38,12 @@ func archivePostgresTable(ctx context.Context, pool *pgxpool.Pool, eng *duck.Eng
 	if key.kind != chunkByTime {
 		partitionColumn = pgPartitionColumn(ctx, conn, table)
 	}
-	plan, err := pgChunkPlan(ctx, conn, table, opts.Where, key, opts.ChunkSize, progress)
+	timeCol, timeType, _ := pgFirstTimestampColumn(ctx, conn.Conn(), table)
+	filter, err := tableWhere("postgres", opts, table, chunkKey{column: timeCol, withZone: strings.Contains(timeType, "with time zone")})
+	if err != nil {
+		return TableEntry{}, err
+	}
+	plan, err := pgChunkPlan(ctx, conn, table, filter.where, key, opts.ChunkSize, progress)
 	if err != nil {
 		return TableEntry{}, err
 	}
@@ -46,7 +51,7 @@ func archivePostgresTable(ctx context.Context, pool *pgxpool.Pool, eng *duck.Eng
 	if err != nil {
 		return TableEntry{}, err
 	}
-	return tableEntry(table, partitionColumn, files, columns, key.kind, key.column, progress.DoneRows), nil
+	return tableEntry(table, partitionColumn, files, columns, key, filter, progress.DoneRows), nil
 }
 
 // pgChunkPlan plans the chunks for the detected strategy.
@@ -167,6 +172,7 @@ func ArchivePostgres(ctx context.Context, dbURL string, tables []string, name st
 		return fmt.Errorf("[archive-postgres] failed to connect to DB pool: %w", err)
 	}
 	defer pool.Close()
+	opts.sourceDSN = dbURL
 	return runBackup(ctx, "postgres", dbURL, tables, name, opts, func(ctx context.Context, eng *duck.Engine, kind duck.Kind, table, backupDir string) (TableEntry, error) {
 		return archivePostgresTable(ctx, pool, eng, kind, table, backupDir, opts)
 	})

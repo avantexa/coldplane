@@ -50,7 +50,7 @@ func Purge(ctx context.Context, backupDir, dsn string, opts PurgeOptions) ([]Pur
 	var results []PurgeResult
 	for i := range m.Tables {
 		t := &m.Tables[i]
-		current, err := countRows(ctx, db, m.DBType, t.Name, m.Where)
+		current, err := countRows(ctx, db, m.DBType, t.Name, m.whereFor(*t))
 		if err != nil {
 			return nil, fmt.Errorf("count %s: %w", t.Name, err)
 		}
@@ -61,7 +61,7 @@ func Purge(ctx context.Context, backupDir, dsn string, opts PurgeOptions) ([]Pur
 			results = append(results, PurgeResult{Table: t.Name, Rows: current})
 			continue
 		}
-		deleted, err := deleteInBatches(ctx, db, m.DBType, t.Name, m.Where, opts.BatchSize)
+		deleted, err := deleteInBatches(ctx, db, m.DBType, t.Name, m.whereFor(*t), opts.BatchSize)
 		if err != nil {
 			return results, fmt.Errorf("purge %s: %w", t.Name, err)
 		}

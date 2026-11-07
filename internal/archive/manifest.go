@@ -30,6 +30,8 @@ type TableEntry struct {
 	Columns         []string           `json:"columns,omitempty"`      // source column order
 	ChunkKind       string             `json:"chunk_kind,omitempty"`   // id, time or offset
 	ChunkColumn     string             `json:"chunk_column,omitempty"` // key or timestamp the chunks ranged over
+	Where           string             `json:"where,omitempty"`        // row filter for this table when it differs from the backup's
+	Since           string             `json:"since,omitempty"`        // lower bound used for this table (--since-last)
 	Verified        *TableVerification `json:"verified,omitempty"`
 	Purged          *TablePurge        `json:"purged,omitempty"`
 }
@@ -47,6 +49,9 @@ type Manifest struct {
 	Engine     string       `json:"engine,omitempty"`      // extraction engine, "duckdb"
 	VerifiedAt string       `json:"verified_at,omitempty"` // set when every table passed verification
 	PurgedAt   string       `json:"purged_at,omitempty"`   // set when the archived rows were removed from the source
+	OlderThan  string       `json:"older_than,omitempty"`  // the --older-than value, e.g. "18m"
+	Cutoff     string       `json:"cutoff,omitempty"`      // rows before this instant were archived
+	Since      string       `json:"since,omitempty"`       // rows from this instant on were archived (--since-last)
 }
 
 // TableNames lists the archived tables in manifest order.
@@ -60,11 +65,7 @@ func (m Manifest) TableNames() []string {
 
 // backupDirFor returns the directory a named backup is written to.
 func backupDirFor(opts ArchiveOptions, name string) string {
-	baseDir := opts.OutputDir
-	if baseDir == "" {
-		baseDir = defaultBackupDir()
-	}
-	return path.Join(baseDir, name)
+	return path.Join(backupBaseDir(opts), name)
 }
 
 // sumSizes adds up the sizes of file entries.
@@ -91,7 +92,7 @@ func newTableEntry(table, partitionColumn string, files []FileEntry) TableEntry 
 
 // writeBackupManifest writes index.json for a finished backup and returns the
 // total size of its files.
-func writeBackupManifest(backupDir, name, dbType, dbName, where string, tables []TableEntry) (int64, error) {
+func writeBackupManifest(backupDir, name, dbType, dbName string, opts ArchiveOptions, tables []TableEntry) (int64, error) {
 	if tables == nil {
 		tables = []TableEntry{}
 	}
@@ -102,8 +103,17 @@ func writeBackupManifest(backupDir, name, dbType, dbName, where string, tables [
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		Tables:    tables,
 		Local:     true,
-		Where:     where,
+		Where:     opts.Where,
 		Engine:    "duckdb",
+		OlderThan: opts.OlderThan,
+	}
+	if !opts.Cutoff.IsZero() {
+		m.Cutoff = opts.Cutoff.UTC().Format(time.RFC3339)
+	}
+	if !opts.Since.IsZero() {
+		m.Since = opts.Since.UTC().Format(time.RFC3339)
+	} else if since := commonSince(tables); since != "" {
+		m.Since = since
 	}
 	for _, t := range tables {
 		m.SizeBytes += t.SizeBytes
@@ -180,14 +190,64 @@ func sourceColumns(ctx context.Context, eng *duck.Engine, kind duck.Kind, table 
 	return columns, rows.Err()
 }
 
+// tableFilter is the resolved row selection for one table.
+type tableFilter struct {
+	where string
+	since time.Time // lower bound, when the run continues a previous one
+}
+
 // tableEntry builds a table's manifest entry with its chunking provenance.
-func tableEntry(table, partitionColumn string, files []FileEntry, columns []string, kind chunkKind, chunkColumn string, rows int64) TableEntry {
+func tableEntry(table, partitionColumn string, files []FileEntry, columns []string, key chunkKey, filter tableFilter, rows int64) TableEntry {
 	e := newTableEntry(table, partitionColumn, files)
 	e.Columns = columns
-	e.ChunkKind = kind.String()
-	e.ChunkColumn = chunkColumn
+	e.ChunkKind = key.kind.String()
+	e.ChunkColumn = key.column
+	e.Where = filter.where
+	if !filter.since.IsZero() {
+		e.Since = filter.since.UTC().Format(time.RFC3339)
+	}
 	e.RowCount = rows
 	return e
+}
+
+// commonSince is the lower bound shared by every table, or "" when they differ.
+func commonSince(tables []TableEntry) string {
+	since := ""
+	for i, t := range tables {
+		if i == 0 {
+			since = t.Since
+		} else if t.Since != since {
+			return ""
+		}
+	}
+	return since
+}
+
+// tableWhere resolves the row filter for one table: the explicit --where, or
+// for --older-than a range on the table's time column, which must exist.
+// since narrows the range to rows archived after the previous run's cutoff.
+func tableWhere(dbType string, opts ArchiveOptions, table string, timeKey chunkKey) (tableFilter, error) {
+	if opts.Cutoff.IsZero() {
+		return tableFilter{where: opts.Where}, nil
+	}
+	if timeKey.column == "" {
+		return tableFilter{}, fmt.Errorf("table %s has no date or timestamp column for --older-than; use --where", table)
+	}
+	since := opts.Since
+	if opts.SinceLast {
+		if last, ok := lastCutoff(backupBaseDir(opts), dbutil.DBNameFromDSN(opts.sourceDSN), table); ok {
+			since = last
+		}
+	}
+	return tableFilter{where: cutoffWhere(dbType, timeKey, since, opts.Cutoff), since: since}, nil
+}
+
+// backupBaseDir is the directory backups live in for these options.
+func backupBaseDir(opts ArchiveOptions) string {
+	if opts.OutputDir != "" {
+		return opts.OutputDir
+	}
+	return defaultBackupDir()
 }
 
 // tableArchiver archives one table of the attached source into backupDir.
@@ -228,7 +288,7 @@ func runBackup(ctx context.Context, dbType, dsn string, tables []string, name st
 		entries = append(entries, entry)
 	}
 
-	total, err := writeBackupManifest(backupDir, name, dbType, dbutil.DBNameFromDSN(dsn), opts.Where, entries)
+	total, err := writeBackupManifest(backupDir, name, dbType, dbutil.DBNameFromDSN(dsn), opts, entries)
 	if err != nil {
 		return fmt.Errorf("%s failed to write local manifest: %w", tag, err)
 	}

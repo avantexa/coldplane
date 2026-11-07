@@ -71,7 +71,7 @@ func Verify(ctx context.Context, backupDir, dsn string, opts VerifyOptions) (Man
 }
 
 func verifyTable(ctx context.Context, eng *duck.Engine, kind duck.Kind, m Manifest, t TableEntry, backupDir string, opts VerifyOptions) TableVerification {
-	native := selectColumnsSQL(m.DBType, t.Name, t.Columns, m.Where)
+	native := selectColumnsSQL(m.DBType, t.Name, t.Columns, m.whereFor(t))
 	srcRows, srcSum, err := countAndChecksum(ctx, eng, duck.RemoteSQL(kind, srcAlias, native), t.Columns, opts.Checksum)
 	if err != nil {
 		return TableVerification{Status: verifyError, Error: "source: " + err.Error()}

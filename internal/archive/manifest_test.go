@@ -35,7 +35,7 @@ func TestWriteBackupManifest_RoundTrip(t *testing.T) {
 		newTableEntry("a", "ts", []FileEntry{{"a/1.parquet", 100}}),
 		newTableEntry("b", "", []FileEntry{{"b/1.parquet", 50}}),
 	}
-	total, err := writeBackupManifest(dir, "bk", "postgres", "mydb", "id > 0", tables)
+	total, err := writeBackupManifest(dir, "bk", "postgres", "mydb", ArchiveOptions{Where: "id > 0"}, tables)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestWriteBackupManifest_RoundTrip(t *testing.T) {
 			t.Errorf("index.json missing %s:\n%s", want, data)
 		}
 	}
-	if _, err := writeBackupManifest(dir, "empty", "mysql", "db", "", nil); err != nil {
+	if _, err := writeBackupManifest(dir, "empty", "mysql", "db", ArchiveOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if data, _ = os.ReadFile(filepath.Join(dir, "index.json")); !containsBytes(data, `"tables": []`) {
@@ -76,7 +76,7 @@ func TestWriteBackupManifest_UnwritableDir(t *testing.T) {
 	if err := os.WriteFile(file, []byte("x"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	total, err := writeBackupManifest(filepath.Join(file, "bk"), "bk", "mysql", "db", "", nil)
+	total, err := writeBackupManifest(filepath.Join(file, "bk"), "bk", "mysql", "db", ArchiveOptions{}, nil)
 	if err == nil || total != 0 {
 		t.Errorf("writing under a file should fail: %d, %v", total, err)
 	}

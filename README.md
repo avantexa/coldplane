@@ -86,6 +86,17 @@ coldplane backup create \
 | `--chunk-size` | | Rows per chunk (default: 2,500,000) |
 | `--workers` | | Parallel archive workers (default: 4) |
 | `--verify` | | Run `backup verify` right after archiving |
+| `--older-than` | | Instead of `--where`: archive rows whose first date/timestamp column is older than this, e.g. `18m`, `2y`, `90d` |
+| `--since-last` | | With `--older-than`: start where the newest verified backup of the same table stopped, so a monthly run archives only new cold rows |
+
+A monthly job looks like this:
+
+```bash
+coldplane backup create --db-url "$DB" --tables "events,logs" --older-than 18m --since-last --verify
+coldplane backup purge-source "$(coldplane backup list | ...)" --db-url "$DB" --yes
+```
+
+The first run archives everything older than 18 months. Each later run archives only the rows that have crossed the threshold since the previous verified run, so the archives never overlap and together cover every cold row. The manifest records the `cutoff` and `since` instants.
 
 ### `backup verify` — Prove the archive matches the source
 
@@ -207,6 +218,15 @@ coldplane query run -b events_20250101_120000 -t events -o csv > report.csv
 | `--table` | `-t` | Table to query (defaults to all tables in the backup) |
 | `--sql` | `-s` | SQL to run (default: `SELECT * FROM restore_input`) |
 | `--output` | `-o` | Output format: `table` (default), `json`, `csv` |
+
+### `backup prune` — Remove old backups
+
+```bash
+coldplane backup prune --older-than 2y          # dry run
+coldplane backup prune --older-than 2y --yes    # remove
+```
+
+Removes backups created longer ago than the threshold. Backups that were never verified are kept unless `--include-unverified` is given.
 
 ### `backup delete` — Delete a backup
 
