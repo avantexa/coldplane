@@ -18,7 +18,7 @@ var (
 
 var versionCmd = &cobra.Command{
 	Use:   "version",
-	Short: "Print the ColdPlane CLI version",
+	Short: "Print the coldplane version",
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Printf("coldplane %s\n", Version)
 		fmt.Printf("  commit:  %s\n", Commit)

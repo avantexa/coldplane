@@ -28,6 +28,9 @@ var rootCmd = &cobra.Command{
 	Short: "Archive cold relational data to Parquet",
 	Long: `coldplane archives cold data from PostgreSQL and MySQL tables into Parquet
 files on local disk, and lets you query those archives with DuckDB.`,
+	// main prints the returned error once; usage is one --help away.
+	SilenceUsage:  true,
+	SilenceErrors: true,
 }
 
 // =============== COMPLETION ===============
@@ -69,7 +72,7 @@ PowerShell:
 // =============== BACKUP GROUP ===============
 var backupCmd = &cobra.Command{
 	Use:   "backup",
-	Short: "Manage backups (create, list, delete)",
+	Short: "Create, verify, restore and manage backups",
 }
 
 var (

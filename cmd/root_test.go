@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 	"testing"
@@ -167,5 +168,21 @@ func TestCloudFlagsAreGone(t *testing.T) {
 		if cmd.Flags().Lookup(c.flag) != nil {
 			t.Errorf("%s should not have --%s", c.cmd, c.flag)
 		}
+	}
+}
+
+func TestFailedCommandPrintsNoUsage(t *testing.T) {
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	defer func() { rootCmd.SetOut(nil); rootCmd.SetErr(nil) }()
+	backupID, sqlFlag = "", ""
+	rootCmd.SetArgs([]string{"query", "run"})
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatal("query run without --backup-id should fail")
+	}
+	// main prints the returned error once; cobra must print neither usage nor its own copy.
+	if s := out.String(); strings.Contains(s, "Usage:") || strings.Contains(s, "Error:") {
+		t.Errorf("a failed command printed:\n%s", s)
 	}
 }
