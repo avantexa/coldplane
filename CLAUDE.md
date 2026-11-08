@@ -40,11 +40,13 @@ coldplane/
 ├── go.mod / go.sum            # module github.com/avantexa/coldplane, Go 1.24
 ├── docker-compose.yml         # PostgreSQL + MySQL for tests
 ├── seed_*.sql, my.cnf         # Test seed data and MySQL config
-├── Dockerfile.build           # Cross-compilers for Linux/Windows builds
+├── Dockerfile.build           # Linux cross-compilers, plain bookworm (binaries need glibc 2.34, GCC 12 libstdc++)
+├── Dockerfile.build-windows   # mingw-w64 on trixie for the Windows build
 └── scripts/
     ├── build.sh               # Cross-platform build script
     ├── test.sh                # Test runner (unit | local | all)
-    └── install.sh             # curl | sh installer pulling from GitHub Releases
+    ├── install.sh             # curl | sh installer: latest GitHub Release, checked against checksums.txt
+    └── release.sh             # build and publish a GitHub Release of a commit CI already published (needs gh)
 ```
 
 ## Build & Run
