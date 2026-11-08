@@ -1,0 +1,11 @@
+# Windows release builds. mingw-w64 from trixie (GCC 14) matches the toolchain
+# go-duckdb's static Windows libraries were built with. Kept apart from the
+# Linux image so trixie's glibc never reaches the Linux binaries.
+FROM golang:1.24-trixie
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/x86_64-w64-mingw32/lib/librstrtmgr.a /usr/x86_64-w64-mingw32/lib/libRstrtmgr.a
+
+WORKDIR /build

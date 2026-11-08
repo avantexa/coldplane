@@ -20,7 +20,7 @@ The two extensions are not in the binary. The first time you archive from an eng
 
 ## Installation
 
-On macOS or Linux (amd64 or arm64):
+On macOS or Linux (amd64 or arm64). The Linux binaries need glibc 2.34 and the libstdc++ of GCC 12 or later: Ubuntu 22.04+, Debian 12+, Fedora 36+. RHEL 9, Rocky 9 and Amazon Linux 2023 ship GCC 11's libstdc++ and are not supported yet.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/avantexa/coldplane/main/scripts/install.sh | sh
