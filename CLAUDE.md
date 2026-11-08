@@ -10,7 +10,7 @@
 coldplane/
 ├── main.go                    # Entry point — calls cmd.Execute()
 ├── cmd/
-│   ├── root.go                # Cobra commands: backup create/list/delete, query run, analyze, completion
+│   ├── root.go                # Cobra commands: backup create/list/verify/purge-source/restore/prune/delete, query run, analyze, completion
 │   └── version.go             # version command; Version/Commit/BuildDate set via ldflags
 ├── internal/
 │   ├── analyze/               # Age analysis: find rows older than a threshold per table
@@ -111,4 +111,5 @@ Integration tests are behind the `integration` build tag and skip unless `COLDPL
 - Pure Go project, Go modules, no Node tooling.
 - `internal/` packages cannot be imported externally.
 - Never hardcode credentials. Test DSNs for the Docker databases live in `integration/helpers_test.go`.
-- Removed on purpose (SaaS era): API client, encryption keys, S3 presigned uploads, restore/convert. Local restore is the first planned follow-up feature.
+- Removed on purpose (SaaS era): API client, encryption keys, S3 presigned uploads. Restore came back as a local command that also covers cross-engine conversion (`backup restore --to` another engine).
+- Do not add AI co-author trailers to commits in this repo.
