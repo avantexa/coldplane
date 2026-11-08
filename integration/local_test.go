@@ -14,8 +14,8 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -109,7 +109,7 @@ func TestLocalPostgresFlow(t *testing.T) {
 
 		backupPath := backupDir + "/" + backupName
 		opts := query.QueryOptions{
-			SQL:    "SELECT count(*) as cnt FROM restore_input",
+			SQL:    "SELECT count(*) as cnt FROM inttest_orders",
 			Output: "json",
 		}
 		err := query.Run(ctx, backupPath, opts)
@@ -124,7 +124,7 @@ func TestLocalPostgresFlow(t *testing.T) {
 
 		backupPath := backupDir + "/" + backupName
 		opts := query.QueryOptions{
-			SQL:    "SELECT customer_name, amount FROM restore_input ORDER BY amount DESC LIMIT 2",
+			SQL:    "SELECT customer_name, amount FROM inttest_orders ORDER BY amount DESC LIMIT 2",
 			Output: "csv",
 		}
 		err := query.Run(ctx, backupPath, opts)
@@ -139,7 +139,7 @@ func TestLocalPostgresFlow(t *testing.T) {
 
 		backupPath := backupDir + "/" + backupName
 		opts := query.QueryOptions{
-			SQL:    "SELECT SUM(amount) as total, AVG(amount) as avg_amount FROM restore_input",
+			SQL:    "SELECT SUM(amount) as total, AVG(amount) as avg_amount FROM inttest_orders",
 			Output: "table",
 		}
 		err := query.Run(ctx, backupPath, opts)
@@ -211,7 +211,7 @@ func TestLocalMySQLFlow(t *testing.T) {
 
 		backupPath := backupDir + "/" + backupName
 		opts := query.QueryOptions{
-			SQL:    "SELECT count(*) as cnt FROM restore_input",
+			SQL:    "SELECT count(*) as cnt FROM inttest_orders",
 			Output: "json",
 		}
 		err := query.Run(ctx, backupPath, opts)
@@ -226,7 +226,7 @@ func TestLocalMySQLFlow(t *testing.T) {
 
 		backupPath := backupDir + "/" + backupName
 		opts := query.QueryOptions{
-			SQL:    "SELECT customer_name, amount FROM restore_input WHERE CAST(amount AS DECIMAL) > 100 ORDER BY amount",
+			SQL:    "SELECT customer_name, amount FROM inttest_orders WHERE CAST(amount AS DECIMAL) > 100 ORDER BY amount",
 			Output: "table",
 		}
 		err := query.Run(ctx, backupPath, opts)
@@ -272,7 +272,7 @@ func TestLocalPostgresAllTypes(t *testing.T) {
 
 		backupPath := backupDir + "/" + backupName
 		opts := query.QueryOptions{
-			SQL:    "SELECT count(*) as cnt FROM restore_input",
+			SQL:    "SELECT count(*) as cnt FROM inttest_alltypes",
 			Output: "json",
 		}
 		err := query.Run(ctx, backupPath, opts)
@@ -287,7 +287,7 @@ func TestLocalPostgresAllTypes(t *testing.T) {
 
 		backupPath := backupDir + "/" + backupName
 		opts := query.QueryOptions{
-			SQL:    "SELECT id, col_varchar, col_boolean, col_bigint FROM restore_input WHERE id <= 5 ORDER BY id",
+			SQL:    "SELECT id, col_varchar, col_boolean, col_bigint FROM inttest_alltypes WHERE id <= 5 ORDER BY id",
 			Output: "table",
 		}
 		err := query.Run(ctx, backupPath, opts)
@@ -334,7 +334,7 @@ func TestLocalMySQLAllTypes(t *testing.T) {
 
 		backupPath := backupDir + "/" + backupName
 		opts := query.QueryOptions{
-			SQL:    "SELECT count(*) as cnt FROM restore_input",
+			SQL:    "SELECT count(*) as cnt FROM inttest_alltypes",
 			Output: "json",
 		}
 		err := query.Run(ctx, backupPath, opts)
@@ -404,39 +404,23 @@ func TestLocalMultiTable(t *testing.T) {
 		t.Errorf("backup %q not found", backupName)
 	})
 
-	t.Run("03_query_specific_table", func(t *testing.T) {
+	t.Run("03_each_table_is_its_own_view", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		backupPath := backupDir + "/" + backupName
-		opts := query.QueryOptions{
-			Table:  "inttest_orders",
-			SQL:    "SELECT count(*) as cnt FROM restore_input",
-			Output: "json",
+		src := openDB(t, "postgres", pgDSN)
+		var orders, alltypes int64
+		if err := src.QueryRow("SELECT (SELECT count(*) FROM inttest_orders), (SELECT count(*) FROM inttest_alltypes)").Scan(&orders, &alltypes); err != nil {
+			t.Fatal(err)
 		}
-		err := query.Run(ctx, backupPath, opts)
-		if err != nil {
-			t.Fatalf("Run table-filtered query failed: %v", err)
+		if orders == alltypes {
+			t.Fatalf("the seeds need different row counts to tell the views apart, both have %d", orders)
 		}
-	})
-
-	t.Run("04_query_all_tables", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		backupPath := backupDir + "/" + backupName
-		opts := query.QueryOptions{
-			SQL:    "SELECT count(*) as cnt FROM restore_input",
-			Output: "json",
-		}
-		err := query.Run(ctx, backupPath, opts)
-		if err != nil {
-			// This may fail if schemas differ between tables — that is expected
-			// for heterogeneous multi-table backups queried together.
-			if strings.Contains(err.Error(), "mismatch") || strings.Contains(err.Error(), "schema") {
-				t.Skipf("Expected schema mismatch querying all tables together: %v", err)
-			}
-			t.Fatalf("Run all-tables query failed: %v", err)
+		// error() makes the query fail unless each view holds exactly its own table's rows.
+		sqlText := fmt.Sprintf(`SELECT CASE WHEN (SELECT count(*) FROM inttest_orders) = %d AND (SELECT count(*) FROM inttest_alltypes) = %d
+			THEN 'ok' ELSE error('view row counts do not match the source tables') END AS result`, orders, alltypes)
+		if err := query.Run(ctx, backupDir+"/"+backupName, query.QueryOptions{SQL: sqlText, Output: "csv"}); err != nil {
+			t.Fatalf("per-table views: %v", err)
 		}
 	})
 }
@@ -687,7 +671,7 @@ func TestLocalBackupWithWhere_Postgres(t *testing.T) {
 
 		backupPath := backupDir + "/" + backupName
 		opts := query.QueryOptions{
-			SQL:    "SELECT count(*) as cnt FROM restore_input",
+			SQL:    "SELECT count(*) as cnt FROM inttest_orders",
 			Output: "json",
 		}
 		err := query.Run(ctx, backupPath, opts)
@@ -758,7 +742,7 @@ func TestLocalBackupWithWhere_MySQL(t *testing.T) {
 
 		backupPath := backupDir + "/" + backupName
 		opts := query.QueryOptions{
-			SQL:    "SELECT count(*) as cnt FROM restore_input",
+			SQL:    "SELECT count(*) as cnt FROM inttest_orders",
 			Output: "json",
 		}
 		err := query.Run(ctx, backupPath, opts)

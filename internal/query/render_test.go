@@ -48,15 +48,6 @@ func TestWriteQueryResults_Empty(t *testing.T) {
 	}
 }
 
-func TestNoFilesError(t *testing.T) {
-	if !strings.Contains(noFilesError("bk", "orders").Error(), `table "orders"`) {
-		t.Error("table variant should name the table")
-	}
-	if strings.Contains(noFilesError("bk", "").Error(), "table") {
-		t.Error("no-table variant should not mention a table")
-	}
-}
-
 func TestFormatCell_SpecialFloats(t *testing.T) {
 	cases := map[string]struct {
 		in   float64

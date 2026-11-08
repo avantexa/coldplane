@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -16,39 +18,34 @@ import (
 	"time"
 
 	"github.com/avantexa/coldplane/internal/archive"
+	"github.com/avantexa/coldplane/internal/dbutil"
+	"github.com/avantexa/coldplane/internal/duck"
 
 	_ "github.com/marcboeker/go-duckdb"
 )
 
 // QueryOptions defines parameters for running a query against a local backup.
 type QueryOptions struct {
-	Table  string // Optional: default table to query
-	SQL    string // Optional: SQL query text
+	SQL    string // SQL query text; each archived table is a view under its own name
 	Output string // Output format: "table" (default), "json", or "csv"
 }
 
 // Run executes a SQL query against a backup's Parquet files using DuckDB.
 func Run(ctx context.Context, backupNameOrPath string, opts QueryOptions) error {
-	backupDir := archive.ResolveBackupDir(backupNameOrPath)
-
-	manifest, err := archive.ReadManifest(backupDir)
-	if err != nil {
-		return fmt.Errorf("backup %q: %w. Run 'coldplane backup list' to see available backups", backupNameOrPath, err)
-	}
-
-	parquetFiles := collectParquetFiles(backupDir, manifest, opts.Table)
-	if len(parquetFiles) == 0 {
-		return noFilesError(backupNameOrPath, opts.Table)
-	}
-
 	sqlText := strings.TrimSpace(opts.SQL)
 	if sqlText == "" {
 		return fmt.Errorf("--sql is required")
 	}
 
-	db, err := openParquetView(ctx, parquetFiles)
+	backupDir := archive.ResolveBackupDir(backupNameOrPath)
+	manifest, err := archive.ReadManifest(backupDir)
 	if err != nil {
-		return err
+		return fmt.Errorf("backup %q: %w. Run 'coldplane backup list' to see available backups", backupNameOrPath, err)
+	}
+
+	db, err := openBackupViews(ctx, backupDir, manifest.Tables)
+	if err != nil {
+		return fmt.Errorf("backup %s: %w", backupNameOrPath, err)
 	}
 	defer db.Close()
 
@@ -59,29 +56,44 @@ func Run(ctx context.Context, backupNameOrPath string, opts QueryOptions) error 
 	return printQueryResults(results, opts.Output)
 }
 
-func noFilesError(backup, table string) error {
-	if table != "" {
-		return fmt.Errorf("no parquet files found for table %q in backup %s. Check the table name with 'coldplane backup list'", table, backup)
-	}
-	return fmt.Errorf("no parquet files found in backup %s", backup)
-}
-
-// openParquetView opens an in-memory DuckDB with the files exposed as the view restore_input.
-func openParquetView(ctx context.Context, files []string) (*sql.DB, error) {
+// openBackupViews opens an in-memory DuckDB with one view per archived table,
+// named after the table, over that table's Parquet files. Tables that
+// archived no rows have no files and get no view.
+func openBackupViews(ctx context.Context, backupDir string, tables []archive.TableEntry) (*sql.DB, error) {
 	db, err := sql.Open("duckdb", "")
 	if err != nil {
 		return nil, fmt.Errorf("open duckdb: %w", err)
 	}
-	quoted := make([]string, len(files))
-	for i, p := range files {
-		quoted[i] = "'" + strings.ReplaceAll(p, "'", "''") + "'"
+	views := 0
+	for _, t := range tables {
+		tableDir := filepath.Join(backupDir, t.Name)
+		if !hasParquet(tableDir) {
+			continue
+		}
+		viewSQL := fmt.Sprintf("CREATE VIEW %s AS SELECT * FROM %s", dbutil.QuotePG(t.Name), duck.ParquetSQL(tableDir))
+		if _, err := db.ExecContext(ctx, viewSQL); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("create view %s: %w", t.Name, err)
+		}
+		views++
 	}
-	viewSQL := fmt.Sprintf("CREATE VIEW restore_input AS SELECT * FROM read_parquet([%s])", strings.Join(quoted, ", "))
-	if _, err := db.ExecContext(ctx, viewSQL); err != nil {
+	if views == 0 {
 		db.Close()
-		return nil, fmt.Errorf("create view: %w", err)
+		return nil, fmt.Errorf("no parquet files found")
 	}
 	return db, nil
+}
+
+// hasParquet reports whether any .parquet file exists under dir.
+func hasParquet(dir string) bool {
+	found := errors.New("found")
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.HasSuffix(path, ".parquet") {
+			return found
+		}
+		return nil
+	})
+	return err == found
 }
 
 // queryRows runs sqlText and returns every row as a column-name map.
@@ -117,50 +129,6 @@ func queryRows(ctx context.Context, db *sql.DB, sqlText string) ([]map[string]in
 		return nil, fmt.Errorf("row iteration: %w", err)
 	}
 	return results, nil
-}
-
-// collectParquetFiles returns the backup's Parquet files, optionally
-// limited to one table: the manifest's files when they exist on disk, else
-// whatever .parquet files a directory walk finds.
-func collectParquetFiles(backupDir string, manifest archive.Manifest, tableName string) []string {
-	files := manifestParquetFiles(backupDir, manifest.Tables, tableName)
-	if len(files) == 0 {
-		searchDir := backupDir
-		if tableName != "" {
-			searchDir = filepath.Join(backupDir, tableName)
-		}
-		files = walkParquetFiles(searchDir)
-	}
-	return files
-}
-
-// manifestParquetFiles returns the manifest file keys that exist on disk.
-func manifestParquetFiles(backupDir string, tables []archive.TableEntry, tableName string) []string {
-	var files []string
-	for _, t := range tables {
-		if tableName != "" && t.Name != tableName {
-			continue
-		}
-		for _, f := range t.Files {
-			full := filepath.Join(backupDir, filepath.FromSlash(f.Key))
-			if _, err := os.Stat(full); err == nil {
-				files = append(files, full)
-			}
-		}
-	}
-	return files
-}
-
-// walkParquetFiles returns every .parquet file under dir.
-func walkParquetFiles(dir string) []string {
-	var files []string
-	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err == nil && !info.IsDir() && strings.HasSuffix(path, ".parquet") {
-			files = append(files, path)
-		}
-		return nil
-	})
-	return files
 }
 
 // printQueryResults prints the query output to stdout in table, csv, or json format.

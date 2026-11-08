@@ -31,7 +31,7 @@ coldplane/
 │   │   └── utils.go           # ProgressTracker, NormalizeMySQLDSN
 │   ├── dbutil/                # Shared SQL helpers: identifier quoting, time parsing, DB name from DSN
 │   ├── query/
-│   │   └── duck.go            # Run: DuckDB in-memory view over the backup's Parquet files
+│   │   └── duck.go            # Run: DuckDB in-memory views, one per archived table, over the backup's Parquet files
 │   └── term/
 │       └── color.go           # Terminal color utilities
 ├── integration/               # Integration tests against Docker databases (build tag: integration)
@@ -66,7 +66,7 @@ go build -o coldplane      # cgo must be enabled (DuckDB); no extra libraries ne
 | `backup prune` | Remove backups older than a threshold; keeps unverified ones unless asked; dry run without `--yes` |
 | `backup list` | List backups found on disk, with a Verified column |
 | `backup delete` | Remove a backup directory |
-| `query run` | Run SQL with DuckDB against a backup (view name: `restore_input`) |
+| `query run` | Run SQL with DuckDB against a backup (each archived table is a view under its own name) |
 | `version`, `completion` | Build info, shell completions |
 
 ## Backup layout

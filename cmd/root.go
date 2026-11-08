@@ -439,20 +439,20 @@ var queryCmd = &cobra.Command{
 }
 
 var (
-	sqlFlag    string
-	queryTable string
-	backupID   string
-	output     string
+	sqlFlag  string
+	backupID string
+	output   string
 )
 
 var queryRunCmd = &cobra.Command{
 	Use:   "run",
 	Short: "Run a SQL query against an archived backup",
+	Long: `Runs SQL with DuckDB over a backup's Parquet files. Each archived table
+is a view under its own name, so tables of one backup can be joined.`,
 	Example: `
   coldplane query run \
     --backup-id orders_20250101_120000 \
-    --table orders \
-    --sql "SELECT COUNT(*) FROM restore_input WHERE amount > 1000" \
+    --sql "SELECT COUNT(*) FROM orders WHERE amount > 1000" \
     --output json`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if backupID == "" {
@@ -463,7 +463,6 @@ var queryRunCmd = &cobra.Command{
 		defer stop()
 
 		opts := query.QueryOptions{
-			Table:  queryTable,
 			SQL:    sqlFlag,
 			Output: output,
 		}
@@ -769,8 +768,7 @@ func init() {
 	)
 
 	// query
-	queryRunCmd.Flags().StringVarP(&sqlFlag, "sql", "s", "", "SQL query to execute (default: SELECT * FROM restore_input)")
-	queryRunCmd.Flags().StringVarP(&queryTable, "table", "t", "", "Specific table to query (optional)")
+	queryRunCmd.Flags().StringVarP(&sqlFlag, "sql", "s", "", "SQL query to execute; tables are views under their own names (required)")
 	queryRunCmd.Flags().StringVarP(&backupID, "backup-id", "b", "", "Backup name to query (required)")
 	queryRunCmd.Flags().StringVarP(&output, "output", "o", "table", "Output format: table|json|csv")
 	queryCmd.AddCommand(queryRunCmd)

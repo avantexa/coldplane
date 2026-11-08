@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"encoding/csv"
 	"encoding/json"
-	"github.com/avantexa/coldplane/internal/archive"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -170,65 +168,5 @@ func TestPrintQueryResults_TableFormatNilValue(t *testing.T) {
 	}
 	if !strings.Contains(dataRow, "present") {
 		t.Errorf("data row missing non-nil value: %q", dataRow)
-	}
-}
-
-// --- collectParquetFiles tests ---
-
-func TestCollectParquetFiles_FromManifest(t *testing.T) {
-	dir := t.TempDir()
-	tableDir := filepath.Join(dir, "orders", "year=2025", "month=01")
-	os.MkdirAll(tableDir, 0755)
-	f1 := filepath.Join(tableDir, "orders-chunk-0-part-0.parquet")
-	os.WriteFile(f1, []byte("data"), 0644)
-
-	manifest := archive.Manifest{Tables: []archive.TableEntry{{
-		Name:  "orders",
-		Files: []archive.FileEntry{{Key: "orders/year=2025/month=01/orders-chunk-0-part-0.parquet", SizeBytes: 4}},
-	}}}
-	files := collectParquetFiles(dir, manifest, "")
-	if len(files) != 1 || files[0] != f1 {
-		t.Errorf("got %v, want [%s]", files, f1)
-	}
-}
-
-func TestCollectParquetFiles_FilterByTable(t *testing.T) {
-	dir := t.TempDir()
-	for _, table := range []string{"orders", "users"} {
-		os.MkdirAll(filepath.Join(dir, table), 0755)
-		os.WriteFile(filepath.Join(dir, table, table+"-chunk-0.parquet"), []byte("data"), 0644)
-	}
-	manifest := archive.Manifest{Tables: []archive.TableEntry{
-		{Name: "orders", Files: []archive.FileEntry{{Key: "orders/orders-chunk-0.parquet", SizeBytes: 4}}},
-		{Name: "users", Files: []archive.FileEntry{{Key: "users/users-chunk-0.parquet", SizeBytes: 4}}},
-	}}
-	files := collectParquetFiles(dir, manifest, "orders")
-	if len(files) != 1 || !strings.Contains(files[0], "orders") {
-		t.Errorf("expected only the orders file, got %v", files)
-	}
-}
-
-func TestCollectParquetFiles_FallbackToWalk(t *testing.T) {
-	dir := t.TempDir()
-	tableDir := filepath.Join(dir, "events", "year=2025")
-	os.MkdirAll(tableDir, 0755)
-	os.WriteFile(filepath.Join(tableDir, "events-chunk-0.parquet"), []byte("data"), 0644)
-	os.WriteFile(filepath.Join(tableDir, "events-chunk-1.parquet"), []byte("data"), 0644)
-
-	// A manifest that lists no files falls back to walking the directory.
-	manifest := archive.Manifest{Tables: []archive.TableEntry{{Name: "events"}}}
-	if files := collectParquetFiles(dir, manifest, ""); len(files) != 2 {
-		t.Errorf("expected 2 files from walk fallback, got %v", files)
-	}
-	// So does a manifest with no tables at all.
-	if files := collectParquetFiles(dir, archive.Manifest{}, ""); len(files) != 2 {
-		t.Errorf("no tables: expected 2 files from walk fallback, got %v", files)
-	}
-}
-
-func TestCollectParquetFiles_NoFiles(t *testing.T) {
-	manifest := archive.Manifest{Tables: []archive.TableEntry{{Name: "empty_table"}}}
-	if files := collectParquetFiles(t.TempDir(), manifest, ""); len(files) != 0 {
-		t.Errorf("expected 0 files, got %v", files)
 	}
 }

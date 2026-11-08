@@ -194,29 +194,30 @@ coldplane backup list
 
 ### `query run` — Query archived data without restoring
 
-Runs SQL with DuckDB over the backup's Parquet files. The selected table is exposed as the view `restore_input`.
+Runs SQL with DuckDB over the backup's Parquet files. Each archived table is a view under its own name, so the tables of one backup can be joined.
 
 ```bash
 coldplane query run \
   --backup-id events_20250101_120000 \
-  --table events \
-  --sql "SELECT user_id, COUNT(*) AS total FROM restore_input WHERE type = 'error' GROUP BY user_id ORDER BY total DESC" \
+  --sql "SELECT user_id, COUNT(*) AS total FROM events WHERE type = 'error' GROUP BY user_id ORDER BY total DESC" \
   --output table
 ```
 
 ```bash
-# JSON — pipe to jq
-coldplane query run -b events_20250101_120000 -t events -o json | jq '.[] | select(.severity == "critical")'
+# JSON — one object per line, pipe to jq
+coldplane query run -b events_20250101_120000 -s "SELECT * FROM events" -o json | jq 'select(.severity == "critical")'
 
 # CSV — for spreadsheets or pipelines
-coldplane query run -b events_20250101_120000 -t events -o csv > report.csv
+coldplane query run -b events_20250101_120000 -s "SELECT * FROM events" -o csv > report.csv
+
+# Join two tables archived in the same backup
+coldplane query run -b events_20250101_120000 -s "SELECT l.message FROM logs l JOIN events e ON e.id = l.event_id"
 ```
 
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--backup-id` | `-b` | Backup name, or a path to a backup directory (required) |
-| `--table` | `-t` | Table to query (defaults to all tables in the backup) |
-| `--sql` | `-s` | SQL to run (default: `SELECT * FROM restore_input`) |
+| `--sql` | `-s` | SQL to run; tables are views under their own names (required) |
 | `--output` | `-o` | Output format: `table` (default), `json`, `csv` |
 
 ### `backup prune` — Remove old backups
