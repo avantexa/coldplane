@@ -20,11 +20,19 @@ The two extensions are not in the binary. The first time you archive from an eng
 
 ## Installation
 
-Download a binary from [GitHub Releases](https://github.com/avantexa/coldplane/releases/latest), or:
+On macOS or Linux (amd64 or arm64):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/avantexa/coldplane/main/scripts/install.sh | sh
 ```
+
+The script picks the binary for your platform, checks it against the release's `checksums.txt`, and installs it to `/usr/local/bin`, using sudo only if that directory is not writable. To install somewhere you own instead:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/avantexa/coldplane/main/scripts/install.sh | COLDPLANE_INSTALL_DIR="$HOME/.local/bin" sh
+```
+
+On Windows, download `coldplane-windows-amd64.exe` from [GitHub Releases](https://github.com/avantexa/coldplane/releases/latest); `checksums.txt` there lists every binary's SHA-256. The macOS binaries are not signed: one downloaded with a browser is quarantined, so clear that with `xattr -d com.apple.quarantine coldplane` (the install script's download is not quarantined).
 
 Or build from source (Go 1.24+, cgo enabled for DuckDB):
 
