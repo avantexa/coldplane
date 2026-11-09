@@ -57,7 +57,7 @@ coldplane analyze --db-url "mysql://user:pass@host:3306/mydb" --all --older-than
 coldplane analyze --db-url "postgres://..." --all --json
 ```
 
-The report ends with ready-to-run `backup create` commands for the tables that have archivable rows.
+The report ends with a ready-to-run `backup create --older-than` command for the tables that have archivable rows; `backup create` picks the same date column per table. With `--date-column`, the command filters that column with a `--where` instead.
 
 | Flag | Short | Description |
 |------|-------|-------------|

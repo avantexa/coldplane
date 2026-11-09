@@ -557,9 +557,9 @@ best. No data leaves your machine.`,
 		}
 
 		renderAnalyzeReport(os.Stdout, report)
-		if suggestions := archiveSuggestions(report, originalDBURL); len(suggestions) > 0 {
+		if suggestion := archiveSuggestion(report, originalDBURL, dateColumn); suggestion != "" {
 			fmt.Println("To archive:")
-			fmt.Println(strings.Join(suggestions, "\n\n"))
+			fmt.Println(suggestion)
 		}
 		return nil
 	},
@@ -606,36 +606,27 @@ func renderAnalyzeReport(w io.Writer, report *analyze.Report) {
 	fmt.Fprintln(w, "Note: old data is not necessarily stale. Review the tables above and decide what to archive.")
 }
 
-// archiveSuggestions returns one 'backup create' command per date column
-// that has archivable rows, grouping the tables that share the column so
-// the --where clause fits every table in the command.
-func archiveSuggestions(report *analyze.Report, dbURL string) []string {
-	type group struct {
-		dateCol string
-		tables  []string
-	}
-	var groups []*group
-	byCol := map[string]*group{}
+// archiveSuggestion returns the 'backup create' command for the tables with
+// archivable rows, or "" when there are none. With auto-detected date columns
+// it uses --older-than, which picks each table's first date column just as
+// analyze did. --older-than cannot name a column, so a --date-column
+// override becomes a --where on that column at the report's cutoff.
+func archiveSuggestion(report *analyze.Report, dbURL, dateColumnOverride string) string {
+	var tables []string
 	for _, tr := range report.Tables {
-		if tr.ArchivableRows == 0 {
-			continue
+		if tr.ArchivableRows > 0 {
+			tables = append(tables, tr.TableName)
 		}
-		g, ok := byCol[tr.DateColumn]
-		if !ok {
-			g = &group{dateCol: tr.DateColumn}
-			byCol[tr.DateColumn] = g
-			groups = append(groups, g)
-		}
-		g.tables = append(g.tables, tr.TableName)
 	}
-	cutoff := report.CutoffDate.Format("2006-01-02")
-	var out []string
-	for _, g := range groups {
-		where := fmt.Sprintf("%s < '%s'", g.dateCol, cutoff)
-		out = append(out, fmt.Sprintf("  coldplane backup create \\\n    --db-url %q \\\n    --tables %q \\\n    --where %q",
-			dbURL, strings.Join(g.tables, ","), where))
+	if len(tables) == 0 {
+		return ""
 	}
-	return out
+	filter := "--older-than " + report.OlderThan
+	if dateColumnOverride != "" {
+		filter = fmt.Sprintf("--where %q", fmt.Sprintf("%s < '%s'", dateColumnOverride, report.CutoffDate.Format("2006-01-02")))
+	}
+	return fmt.Sprintf("  coldplane backup create \\\n    --db-url %q \\\n    --tables %q \\\n    %s",
+		dbURL, strings.Join(tables, ","), filter)
 }
 
 func humanCount(n int64) string {
