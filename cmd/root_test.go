@@ -186,3 +186,31 @@ func TestFailedCommandPrintsNoUsage(t *testing.T) {
 		t.Errorf("a failed command printed:\n%s", s)
 	}
 }
+
+func TestMistypedSubcommandFails(t *testing.T) {
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	defer func() { rootCmd.SetOut(nil); rootCmd.SetErr(nil); rootCmd.SetArgs(nil) }()
+
+	for _, c := range []struct {
+		args    []string
+		suggest string
+	}{
+		{[]string{"backup", "crete"}, "create"},
+		{[]string{"query", "rn"}, "run"},
+	} {
+		rootCmd.SetArgs(c.args)
+		err := rootCmd.Execute()
+		if err == nil || !strings.Contains(err.Error(), "unknown command") || !strings.Contains(err.Error(), c.suggest) {
+			t.Errorf("%v: want an unknown command error suggesting %q, got %v", c.args, c.suggest, err)
+		}
+	}
+
+	// The bare group still shows its help and succeeds.
+	out.Reset()
+	rootCmd.SetArgs([]string{"backup"})
+	if err := rootCmd.Execute(); err != nil || !strings.Contains(out.String(), "Available Commands") {
+		t.Errorf("backup alone: err %v, output:\n%s", err, out.String())
+	}
+}

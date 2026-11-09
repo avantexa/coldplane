@@ -73,6 +73,24 @@ PowerShell:
 var backupCmd = &cobra.Command{
 	Use:   "backup",
 	Short: "Create, verify, restore and manage backups",
+	RunE:  runGroup,
+}
+
+// runGroup shows a command group's help, or fails on an unknown subcommand
+// the way the root command does. Without it cobra prints help and exits 0
+// for a typo such as "backup crete".
+func runGroup(cmd *cobra.Command, args []string) error {
+	if len(args) == 0 {
+		return cmd.Help()
+	}
+	msg := fmt.Sprintf("unknown command %q for %q", args[0], cmd.CommandPath())
+	if cmd.SuggestionsMinimumDistance <= 0 {
+		cmd.SuggestionsMinimumDistance = 2 // cobra's default, which only the root path applies
+	}
+	if suggestions := cmd.SuggestionsFor(args[0]); len(suggestions) > 0 {
+		msg += "\n\nDid you mean this?\n\t" + strings.Join(suggestions, "\n\t")
+	}
+	return fmt.Errorf("%s\n\nRun '%s --help' for usage", msg, cmd.CommandPath())
 }
 
 var (
@@ -439,6 +457,7 @@ var backupDeleteCmd = &cobra.Command{
 var queryCmd = &cobra.Command{
 	Use:   "query",
 	Short: "Run SQL queries against archived backups",
+	RunE:  runGroup,
 }
 
 var (
